@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { loadSettings, settingsPath } from "./config";
 import { run } from "./exec";
-import { readCached, sourceHash, writeCached } from "./keychain";
+import { readCached, readServiceAccountToken, sourceHash, writeCached } from "./keychain";
 import { ShipError } from "./ui";
 
 /** An App Store Connect API key, resolved and ready to sign with. */
@@ -65,14 +65,24 @@ export async function hasCredentials(): Promise<boolean> {
 export async function resolveValue(value: string | undefined, opAccount?: string): Promise<string | undefined> {
   if (!value) return undefined;
   if (value.startsWith("op://")) {
-    // A service account token (OP_SERVICE_ACCOUNT_TOKEN) picks its own account.
-    const account = opAccount && !process.env.OP_SERVICE_ACCOUNT_TOKEN ? ["--account", opAccount] : [];
-    const result = await run(["op", "read", ...account, value]);
+    // A service account token (from the environment, or the one `ship auth
+    // service-account` saved) reads without Touch ID and picks its own account.
+    const token = await serviceAccountToken();
+    const account = opAccount && !token ? ["--account", opAccount] : [];
+    const result = await run(["op", "read", ...account, value], { env: token ? { OP_SERVICE_ACCOUNT_TOKEN: token } : {} });
     if (result.code !== 0) {
       throw new ShipError(
         `Couldn't read ${value} from 1Password`,
         "op-failed",
-        `${result.stderr.trim() || "Is the 1Password CLI signed in?"} Check the reference in ${settingsPath}.`,
+        [
+          result.stderr.trim(),
+          token
+            ? "ship reads 1Password with a service account: check it can see this vault, or save a new token with `ship auth service-account <op://ref>` (or `ship auth service-account remove`)."
+            : "Is the 1Password CLI signed in?",
+          `Check the reference in ${settingsPath}.`,
+        ]
+          .filter(Boolean)
+          .join(" "),
       );
     }
     return result.stdout.trim();
@@ -80,6 +90,11 @@ export async function resolveValue(value: string | undefined, opAccount?: string
   if (value.startsWith("env:")) return process.env[value.slice(4)];
   if (value.startsWith("file:")) return readFile(value.slice(5));
   return value;
+}
+
+/** The service account token for `op`: OP_SERVICE_ACCOUNT_TOKEN, else the Keychain's. */
+export async function serviceAccountToken(): Promise<string | undefined> {
+  return process.env.OP_SERVICE_ACCOUNT_TOKEN || (await readServiceAccountToken());
 }
 
 async function readFile(path: string): Promise<string> {

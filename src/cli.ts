@@ -158,6 +158,7 @@ async function main(argv: string[]) {
         issuerId: v["issuer-id"] as string,
         privateKey: v["private-key"] as string,
         opAccount: v["op-account"] as string,
+        ref: positionals[1],
       });
     case "doctor":
       return doctor();

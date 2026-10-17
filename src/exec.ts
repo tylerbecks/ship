@@ -13,7 +13,8 @@ export async function run(
 ): Promise<RunResult> {
   const proc = Bun.spawn(command, {
     cwd: options.cwd,
-    env: { ...process.env, ...options.env },
+    // An undefined value removes the variable.
+    env: Object.fromEntries(Object.entries({ ...process.env, ...options.env }).filter(([, value]) => value !== undefined)) as Record<string, string>,
     stdout: "pipe",
     stderr: "pipe",
   });

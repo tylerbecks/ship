@@ -27,7 +27,7 @@ ship auth set --key-id op://Private/ASC/key-id \
               --private-key op://Private/ASC/AuthKey.p8
 ```
 
-Values can be literal, `op://` (1Password), `env:NAME`, or `file:<path>`. Settings live in `~/.config/ship/config.json`, which holds only the references. For CI, set `SHIP_ASC_KEY_ID`, `SHIP_ASC_ISSUER_ID`, and `SHIP_ASC_PRIVATE_KEY` (or `SHIP_ASC_PRIVATE_KEY_PATH`) instead.
+Values can be literal, `op://` (1Password), `env:NAME`, or `file:<path>`. Settings live in `~/.config/ship/config.json`, which holds only the references. To stop Touch ID prompts, give a 1Password service account read access to the key's vault and run `ship auth service-account op://Private/<token item>/credential` once; ship keeps the token in the Keychain for its own `op` calls. For CI, set `SHIP_ASC_KEY_ID`, `SHIP_ASC_ISSUER_ID`, and `SHIP_ASC_PRIVATE_KEY` (or `SHIP_ASC_PRIVATE_KEY_PATH`) instead.
 
 **Once per repo:** `ship init` at the repo root. It finds the `.xcodeproj`, `.xcworkspace`, or App Playground `.swiftpm` package, the scheme that builds the app, and the bundle id, and writes `ship.json`. Commit it: every clone and worktree is then set up. When there's more than one choice, it lists them and the flag to pass. `ship remove` undoes it; `ship apps` lists every app set up on this machine, and `--app <name>` targets one from anywhere.
 

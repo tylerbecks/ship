@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bearerToken } from "../src/asc/client";
 import { checkInfo } from "../src/build";
-import { errorLines } from "../src/exec";
+import { errorLines, run } from "../src/exec";
 import { findContainers, packageSettings, setPackageBuild } from "../src/xcode";
 
 const temp = () => mkdtempSync(join(tmpdir(), "ship-test-"));
@@ -78,6 +78,15 @@ describe("checkInfo", () => {
     const checks = checkInfo({ CFBundleIdentifier: "com.example.app", CFBundleVersion: "1" }, { bundleId: "com.example.app", build: "5" });
     expect(checks.map((c) => c.ok)).toEqual([true, false, false]);
   });
+});
+
+test("run removes environment variables set to undefined", async () => {
+  process.env.SHIP_TEST_VAR = "set";
+  const kept = await run(["sh", "-c", "echo ${SHIP_TEST_VAR-unset}"]);
+  const removed = await run(["sh", "-c", "echo ${SHIP_TEST_VAR-unset}"], { env: { SHIP_TEST_VAR: undefined } });
+  delete process.env.SHIP_TEST_VAR;
+  expect(kept.stdout.trim()).toBe("set");
+  expect(removed.stdout.trim()).toBe("unset");
 });
 
 test("errorLines keeps only the useful lines of a build log", () => {
