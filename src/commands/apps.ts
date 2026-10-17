@@ -1,0 +1,57 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { CONFIG_FILE, findConfigRoot, forgetApp, loadApps, loadProject, removeProjectConfig } from "../config";
+import { ShipError, table, ui } from "../ui";
+
+export const appsHelp = `ship apps
+
+Lists the apps set up on this machine and where their repos are. Any
+command can target one of them from anywhere with --app <name>.`;
+
+export async function apps() {
+  const list = await loadApps();
+  const rows = list.map((app) => ({ ...app, found: existsSync(join(app.root, CONFIG_FILE)) }));
+  ui.result({ apps: rows }, () => {
+    if (!rows.length) {
+      console.log("No apps yet. Run `ship init` in an app's repo.");
+      return;
+    }
+    console.log(
+      table([
+        ["NAME", "BUNDLE ID", "REPO"],
+        ...rows.map((app) => [app.name, app.bundleId, app.found ? app.root : `${app.root} (missing)`]),
+      ]),
+    );
+  });
+}
+
+export const removeHelp = `ship remove [--app <name>] [--keep-file]
+
+Undoes \`ship init\`: deletes the repo's ship.json and forgets the app on
+this machine. Nothing in App Store Connect changes.
+
+  --app <name>   Remove an app from anywhere (see \`ship apps\`)
+  --keep-file    Only forget the app on this machine; leave ship.json`;
+
+export async function remove(options: { app?: string; keepFile?: boolean }) {
+  let root: string | undefined;
+  let name: string | undefined;
+  if (options.app) {
+    const known = await loadApps();
+    const match = known.find((app) => app.name.toLowerCase() === options.app!.toLowerCase() || app.bundleId === options.app);
+    if (!match) throw new ShipError(`No app called "${options.app}" on this machine`, "unknown-app", "See `ship apps`.");
+    root = match.root;
+    name = match.name;
+  } else {
+    root = findConfigRoot(process.cwd());
+    if (!root) throw new ShipError("This folder isn't set up for ship", "no-config", "Nothing to remove.");
+    name = (await loadProject()).config.name;
+  }
+  const forgotten = await forgetApp(root);
+  const hadFile = existsSync(join(root, CONFIG_FILE));
+  if (!options.keepFile) removeProjectConfig(root);
+  ui.result({ name, root, forgotten, deletedFile: hadFile && !options.keepFile }, () => {
+    console.log(`Removed ${name}.`);
+    if (hadFile && !options.keepFile) console.log(`Deleted ${join(root!, CONFIG_FILE)}. Commit the deletion if it was checked in.`);
+  });
+}

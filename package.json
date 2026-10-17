@@ -1,0 +1,19 @@
+{
+  "name": "ship",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Build, upload, and manage TestFlight and App Store Connect from the command line.",
+  "bin": { "ship": "src/cli.ts" },
+  "scripts": {
+    "dev": "bun src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/cli.ts --compile --outfile dist/ship",
+    "install-local": "bun run build && mkdir -p ~/.local/bin && rm -f ~/.local/bin/ship && cp dist/ship ~/.local/bin/ship && codesign --force --sign - ~/.local/bin/ship && echo 'installed ~/.local/bin/ship'"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
