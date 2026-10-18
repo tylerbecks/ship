@@ -108,11 +108,18 @@ export interface BetaGroup {
   isInternal: boolean;
   publicLink?: string;
   publicLinkEnabled?: boolean;
+  /** An internal group that gets every build automatically; builds can't be added to it by hand. */
+  automatic?: boolean;
 }
 
 export async function betaGroups(appId: string): Promise<BetaGroup[]> {
-  const { data } = await all<{ name: string; isInternalGroup: boolean; publicLink?: string; publicLinkEnabled?: boolean }>(
-    `/v1/apps/${appId}/betaGroups?fields[betaGroups]=name,isInternalGroup,publicLink,publicLinkEnabled&limit=200`,
+  const { data } = await all<{
+    name: string;
+    isInternalGroup: boolean;
+    publicLink?: string;
+    publicLinkEnabled?: boolean;
+    hasAccessToAllBuilds?: boolean;
+  }>(`/v1/apps/${appId}/betaGroups?fields[betaGroups]=name,isInternalGroup,publicLink,publicLinkEnabled,hasAccessToAllBuilds&limit=200`,
   );
   return data.map((group) => ({
     id: group.id,
@@ -120,6 +127,7 @@ export async function betaGroups(appId: string): Promise<BetaGroup[]> {
     isInternal: group.attributes.isInternalGroup,
     publicLink: group.attributes.publicLink,
     publicLinkEnabled: group.attributes.publicLinkEnabled,
+    automatic: group.attributes.isInternalGroup && Boolean(group.attributes.hasAccessToAllBuilds),
   }));
 }
 

@@ -150,6 +150,11 @@ async function distribute(project: Project, id: string, number: string, options:
   if (!targets.length) notes.push(options.external ? "No TestFlight groups to add it to. Create them in App Store Connect." : "No internal TestFlight groups yet.");
   const added: string[] = [];
   for (const group of targets) {
+    if (group.automatic) {
+      added.push(group.name);
+      ui.ok(`${group.name} gets every build automatically`);
+      continue;
+    }
     try {
       await addBuildToGroup(group.id, build.id);
       added.push(group.name);
