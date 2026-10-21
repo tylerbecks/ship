@@ -30,7 +30,7 @@ import { type Project, loadSettings } from "../config";
 import { type Change, MASK, diffRecord, same } from "../diff";
 import { isSecretReference, resolveSecret } from "../secrets";
 import { ShipError, ui } from "../ui";
-import { type Problem, chars, isEmail, isHttpUrl, passwordProblem } from "./check";
+import { type Problem, chars, isEmail, isHttpUrl, passwordProblem, referenceProblem } from "./check";
 import { ASC_LOCALES, LOCALE_PATTERN, type PushResult, type ReviewDetails, isObject, localeDirs, readText, writeText } from "./files";
 
 /** The testflight folder inside the store folder. */
@@ -359,6 +359,8 @@ export function validateBetaInfo(info: BetaInfoFiles): BetaProblem[] {
     const password = typeof review.demoAccountPassword === "string" ? review.demoAccountPassword : undefined;
     const plaintext = passwordProblem(reviewFile, "demoAccountPassword", password);
     if (plaintext) problems.push({ ...plaintext, code: "plaintext-secret" });
+    const reference = referenceProblem(reviewFile, "demoAccountPassword", password);
+    if (reference) problems.push(reference);
     // A missing key isn't managed (App Store Connect may have it); an empty one would clear it.
     if (review.demoAccountRequired === true) {
       if (!review.demoAccountName && review.demoAccountName !== undefined) {
@@ -422,7 +424,11 @@ export interface BetaPushResult extends PushResult {
 /** The password a reference points at, never logged. */
 const resolvePassword = async (ref: string) => (await resolveSecret(ref, { opAccount: (await loadSettings()).opAccount })) ?? "";
 
-/** Reads the folder, checks it, and compares it with App Store Connect. Resolves the password only when Apple shows its own. */
+/**
+ * Reads the folder, checks it, and compares it with App Store Connect.
+ * Stops on validation errors before asking App Store Connect or reading a
+ * secret. Resolves the password only when Apple shows its own.
+ */
 export async function diffBetaInfo(project: Project, options: { appId: string; locales?: string[]; prune?: boolean }) {
   const dir = testflightDir(project);
   if (!existsSync(dir)) {
@@ -431,6 +437,15 @@ export async function diffBetaInfo(project: Project, options: { appId: string; l
   const local = await readBetaInfo(dir);
   const problems = validateBetaInfo(local);
   refusePlaintext(problems, project);
+  const errors = problems.filter((p) => p.severity === "error");
+  if (errors.length) {
+    throw new ShipError(
+      `testflight/ has ${errors.length} problem${errors.length === 1 ? "" : "s"}: ${errors[0]!.file}: ${errors[0]!.message}`,
+      "invalid-store",
+      "See them all with `ship testflight validate`.",
+      { problems: errors },
+    );
+  }
   for (const locale of options.locales ?? []) {
     if (!LOCALE_PATTERN.test(locale) || !(locale in local.locales)) {
       throw new ShipError(
@@ -444,23 +459,14 @@ export async function diffBetaInfo(project: Project, options: { appId: string; l
   }
   const remote = await fetchBetaInfo(options.appId);
   const ref = local.review?.demoAccountPassword;
-  const resolvedPassword = ref && remote.review.attributes.demoAccountPassword ? await resolvePassword(ref) : undefined;
+  const resolvedPassword = typeof ref === "string" && ref && remote.review.attributes.demoAccountPassword ? await resolvePassword(ref) : undefined;
   const plan = planBetaInfo(local, remote, { locales: options.locales, resolvedPassword, prune: options.prune });
   return { local, remote, plan, problems };
 }
 
 /** Sends the testflight folder to App Store Connect (or with dryRun, says what it would send). */
 export async function pushBetaInfo(project: Project, options: { appId: string; dryRun?: boolean; locales?: string[]; prune?: boolean }): Promise<BetaPushResult> {
-  const { local, remote, plan, problems } = await diffBetaInfo(project, options);
-  const errors = problems.filter((p) => p.severity === "error");
-  if (errors.length) {
-    throw new ShipError(
-      `testflight/ has ${errors.length} problem${errors.length === 1 ? "" : "s"}: ${errors[0]!.file}: ${errors[0]!.message}`,
-      "invalid-store",
-      "See them all with `ship testflight validate`.",
-      { problems: errors },
-    );
-  }
+  const { local, remote, plan } = await diffBetaInfo(project, options);
   if (options.prune && plan.onlyRemote.length && !Object.keys(local.locales).length) {
     throw new ShipError(
       "testflight/ has no language folders, so --prune would delete every localization",

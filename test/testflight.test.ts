@@ -566,6 +566,25 @@ describe("testflight test information", () => {
     expect(mock.calls).toEqual([]);
   });
 
+  test("diff and push stop on validation errors before asking Apple or reading a secret", async () => {
+    const root = setup();
+    mock = mockAsc(() => undefined);
+    const dir = join(root, "appstore", "testflight");
+    mkdirSync(dir, { recursive: true });
+    // A numeric PIN isn't text; resolving it would have crashed.
+    writeFileSync(join(dir, "review.json"), JSON.stringify({ demoAccountRequired: true, demoAccountName: "a@example.com", demoAccountPassword: 1234 }));
+    for (const action of ["diff", "push"]) {
+      const error = await rejects(() => testflight(ctx([action])));
+      expect(error).toMatchObject({ code: "invalid-store", hint: "See them all with `ship testflight validate`." });
+    }
+    // keychain:<service> alone could resolve to ship's own items.
+    writeFileSync(join(dir, "review.json"), JSON.stringify({ demoAccountRequired: true, demoAccountName: "a@example.com", demoAccountPassword: "keychain:ship" }));
+    const error = await rejects(() => testflight(ctx(["push"])));
+    expect(error).toMatchObject({ code: "invalid-store" });
+    expect(error.message).toContain("keychain:ship needs an account");
+    expect(mock.calls).toEqual([]);
+  });
+
   test("validate: lengths, URLs, emails, the demo account, plaintext passwords", async () => {
     const problems = validateBetaInfo({
       ...emptyInfo(),
