@@ -6,6 +6,7 @@
 
 import { ShipError } from "../ui";
 import { AscError, type Resource, TIMEOUT_MS, all, del, get, one, patch, post, retry, retryDelay } from "./client";
+import { versionLocalizations } from "./metadata";
 
 export type MediaKind = "screenshots" | "previews";
 
@@ -42,14 +43,6 @@ export const polling = {
 export interface VersionLocalization {
   id: string;
   locale: string;
-}
-
-/** The version's localizations (one per language on the page). */
-export async function versionLocalizations(versionId: string): Promise<VersionLocalization[]> {
-  const { data } = await all<{ locale: string }>(
-    `/v1/appStoreVersions/${encodeURIComponent(versionId)}/appStoreVersionLocalizations?fields[appStoreVersionLocalizations]=locale&limit=200`,
-  );
-  return data.map((item) => ({ id: item.id, locale: item.attributes.locale }));
 }
 
 /** Adds a language to the version. If it's already there (made in the meantime), returns that one. */

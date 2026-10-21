@@ -34,7 +34,6 @@ import {
   appPath,
   appRecord,
   categoriesBody,
-  hasPhasedRelease,
   localizationPath,
   newAppInfoLocalization,
   newReviewDetail,
@@ -47,6 +46,7 @@ import {
   versionLocalizations,
   versionPath,
 } from "../asc/metadata";
+import { phasedRelease } from "../asc/release";
 import {
   type AppInfo,
   type AppStoreVersion,
@@ -215,7 +215,7 @@ export async function fetchRemote(appId: string, platform: AscPlatform, options:
     appInfo ? appInfoLocalizations(appInfo.id) : [],
     version ? versionLocalizations(version.id) : [],
     version ? reviewDetail(version.id) : undefined,
-    version && options.phased ? hasPhasedRelease(version.id) : undefined,
+    version && options.phased ? phasedRelease(version.id).then(Boolean) : undefined,
   ]);
   return {
     app,

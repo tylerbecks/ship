@@ -186,12 +186,6 @@ export const newVersionLocalization = (versionId: string, attributes: Record<str
 export const versionPath = (versionId: string) => `/v1/appStoreVersions/${id(versionId)}`;
 export const versionBody = (versionId: string, attributes: Record<string, unknown>) => update("appStoreVersions", versionId, attributes);
 
-/** Whether the version has a phased release set up. */
-export async function hasPhasedRelease(versionId: string): Promise<boolean> {
-  const doc = await orNone(get(`/v1/appStoreVersions/${id(versionId)}/appStoreVersionPhasedRelease?fields[appStoreVersionPhasedReleases]=phasedReleaseState`));
-  return Boolean(one(doc));
-}
-
 // MARK: App Review
 
 export interface ReviewDetail {

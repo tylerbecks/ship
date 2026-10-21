@@ -44,7 +44,6 @@ export const REVIEW_NOTES_FILE = "review-notes.txt";
 export const STORE_FILES = ["app.json", REVIEW_NOTES_FILE, "media.lock.json"];
 
 export const fieldForFile = (file: string) => LOCALE_FIELDS.find((entry) => entry.file === file);
-export const fileForField = (field: string) => LOCALE_FIELDS.find((entry) => entry.field === field);
 
 /** The code on a problem (and push's error) for a password written out instead of referenced. */
 export const PLAINTEXT_SECRET = "plaintext-secret";

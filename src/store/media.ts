@@ -34,9 +34,9 @@ import {
   screenshotUrl,
   stateErrors,
   uploadParts,
-  versionLocalizations,
   waitForMedia,
 } from "../asc/media";
+import { versionLocalizations } from "../asc/metadata";
 import { type AppStoreVersion, LIVE_VERSION_STATES, appStoreVersions, isEditableVersion } from "../asc/versions";
 import type { Project } from "../config";
 import type { Change } from "../diff";

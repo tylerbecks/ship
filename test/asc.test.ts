@@ -25,10 +25,8 @@ import {
   appInfos,
   appStoreVersions,
   editableAppInfo,
-  findVersion,
   isEditableVersion,
   liveAppInfo,
-  liveVersion,
   pickVersion,
   versionState,
 } from "../src/asc/versions";
@@ -464,9 +462,8 @@ describe("versions", () => {
     expect(versions.map((v) => v.id)).toEqual(["v2", "v1"]);
     expect(versions[0]).toMatchObject({ state: "PREPARE_FOR_SUBMISSION", releaseType: "MANUAL", buildId: "b9", buildNumber: "57" });
     expect(isEditableVersion(versions[0]!)).toBe(true);
-    expect((await findVersion("app", "IOS"))?.id).toBe("v2");
-    expect((await findVersion("app", "IOS", "1.0"))?.id).toBe("v1");
-    expect((await liveVersion("app", "IOS"))?.id).toBe("v1");
+    expect(pickVersion(versions)?.id).toBe("v2");
+    expect(pickVersion(versions, "1.0")?.id).toBe("v1");
     expect(pickVersion(versions, "9.9")).toBeUndefined();
   });
 

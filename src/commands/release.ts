@@ -4,6 +4,7 @@
 // follow it from there.
 
 import { type Build, findBuild, listBuilds, setExemptEncryption } from "../asc/builds";
+import { appInfoLocalizations, appRecord, reviewDetail, versionLocalizations } from "../asc/metadata";
 import {
   CANCELABLE_STATES,
   type Check,
@@ -14,8 +15,6 @@ import {
   type ReviewSubmission,
   type VersionPlan,
   addSubmissionItem,
-  appInfoLocalizations,
-  appReleaseInfo,
   attachBuild,
   blockingFailures,
   cancelSubmission,
@@ -34,14 +33,15 @@ import {
   planVersion,
   preflightChecks,
   requestRelease,
-  reviewContact,
   screenshotTypes,
   setPhasedReleaseState,
   stateText,
   submitSubmission,
+  toInfoLocalization,
+  toReviewContact,
+  toVersionLocalization,
   updateVersion,
   versionCopyright,
-  versionLocalizations,
 } from "../asc/release";
 import { type AppStoreVersion, LIVE_VERSION_STATES, appInfos, appStoreVersions, editableAppInfo, liveAppInfo, pickVersion } from "../asc/versions";
 import { checkBuildNumber } from "../build";
@@ -455,15 +455,18 @@ export interface SubmitResult extends PrepareResult {
 async function preflight(context: ReleaseContext, version: AppStoreVersion, build: Build, dryRun: boolean): Promise<Check[]> {
   ui.step("Checking the version is ready for review");
   const [locales, infos, app, review, copyright] = await Promise.all([
-    versionLocalizations(version.id),
+    versionLocalizations(version.id).then((list) => list.map(toVersionLocalization)),
     appInfos(context.appId),
-    appReleaseInfo(context.appId),
-    reviewContact(version.id),
+    appRecord(context.appId),
+    reviewDetail(version.id).then(toReviewContact),
     versionCopyright(version.id),
   ]);
   const info = editableAppInfo(infos) ?? liveAppInfo(infos) ?? infos[0];
   const primary = locales.find((locale) => locale.locale === app.primaryLocale) ?? locales[0];
-  const [infoLocales, screenshots] = await Promise.all([info ? appInfoLocalizations(info.id) : [], primary ? screenshotTypes(primary.id) : []]);
+  const [infoLocales, screenshots] = await Promise.all([
+    info ? appInfoLocalizations(info.id).then((list) => list.map(toInfoLocalization)) : [],
+    primary ? screenshotTypes(primary.id) : [],
+  ]);
   const checks = preflightChecks({
     platform: context.platform,
     update: context.versions.some((v) => LIVE_VERSION_STATES.includes(v.state)),

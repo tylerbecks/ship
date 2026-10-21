@@ -106,15 +106,6 @@ export function pickVersion(versions: AppStoreVersion[], versionString?: string)
   return versions.find(isEditableVersion);
 }
 
-export async function findVersion(appId: string, platform: AscPlatform, versionString?: string): Promise<AppStoreVersion | undefined> {
-  return pickVersion(await appStoreVersions(appId, platform), versionString);
-}
-
-/** The version on the App Store now. */
-export async function liveVersion(appId: string, platform: AscPlatform): Promise<AppStoreVersion | undefined> {
-  return (await appStoreVersions(appId, platform)).find((version) => LIVE_VERSION_STATES.includes(version.state));
-}
-
 // MARK: App Infos
 
 /** The app-level page (name, subtitle, categories, age rating). There's a live one, and one being prepared alongside a new version. */

@@ -1,6 +1,7 @@
 // Releasing to the App Store: creating and renaming versions, attaching the
 // build, release type and phased release, review submissions, and releasing
-// an approved version. Also the reads the pre-submission checks use, and the
+// an approved version. Also what the pre-submission checks read (mapped from
+// asc/metadata.ts's fetchers, so each endpoint is read one way), and the
 // pure rules (which version to use, which build, which phased-release moves
 // are allowed) that the release command and its tests share.
 
@@ -9,6 +10,7 @@ import { ShipError } from "../ui";
 import { compareVersions } from "../version";
 import type { Build } from "./builds";
 import { AscError, type Resource, all, del, get, one, patch, post, relatedMany, relationshipId } from "./client";
+import type { Localization, ReviewDetail } from "./metadata";
 import { type AppStoreVersion, LIVE_VERSION_STATES, isEditableVersion, toVersion } from "./versions";
 
 // MARK: Versions
@@ -428,19 +430,17 @@ export interface VersionLocalization {
   whatsNew: string | null;
 }
 
-export async function versionLocalizations(versionId: string): Promise<VersionLocalization[]> {
-  const { data } = await all<Record<string, string | null>>(
-    `/v1/appStoreVersions/${encodeURIComponent(versionId)}/appStoreVersionLocalizations?fields[appStoreVersionLocalizations]=locale,description,keywords,supportUrl,whatsNew&limit=200`,
-  );
-  return data.map((resource) => ({
-    id: resource.id,
-    locale: resource.attributes.locale ?? "",
-    description: resource.attributes.description ?? null,
-    keywords: resource.attributes.keywords ?? null,
-    supportUrl: resource.attributes.supportUrl ?? null,
-    whatsNew: resource.attributes.whatsNew ?? null,
-  }));
-}
+/** The fields the checks read, from a version localization as asc/metadata.ts reads it. */
+export const toVersionLocalization = ({ id, locale, attributes }: Localization): VersionLocalization => ({
+  id,
+  locale,
+  description: text(attributes.description),
+  keywords: text(attributes.keywords),
+  supportUrl: text(attributes.supportUrl),
+  whatsNew: text(attributes.whatsNew),
+});
+
+const text = (value: unknown) => (typeof value === "string" ? value : null);
 
 export interface InfoLocalization {
   locale: string;
@@ -448,16 +448,12 @@ export interface InfoLocalization {
   privacyPolicyUrl: string | null;
 }
 
-export async function appInfoLocalizations(appInfoId: string): Promise<InfoLocalization[]> {
-  const { data } = await all<Record<string, string | null>>(
-    `/v1/appInfos/${encodeURIComponent(appInfoId)}/appInfoLocalizations?fields[appInfoLocalizations]=locale,name,privacyPolicyUrl&limit=200`,
-  );
-  return data.map((resource) => ({
-    locale: resource.attributes.locale ?? "",
-    name: resource.attributes.name ?? null,
-    privacyPolicyUrl: resource.attributes.privacyPolicyUrl ?? null,
-  }));
-}
+/** The fields the checks read, from an App Info localization as asc/metadata.ts reads it. */
+export const toInfoLocalization = ({ locale, attributes }: Localization): InfoLocalization => ({
+  locale,
+  name: text(attributes.name),
+  privacyPolicyUrl: text(attributes.privacyPolicyUrl),
+});
 
 /** The screenshot display types a version localization has screenshots for. */
 export async function screenshotTypes(localizationId: string): Promise<string[]> {
@@ -482,34 +478,14 @@ export interface ReviewContact {
   contactPhone: string | null;
 }
 
-/** The version's App Review contact, or undefined when there isn't one yet. */
-export async function reviewContact(versionId: string): Promise<ReviewContact | undefined> {
-  try {
-    const doc = await get<Record<string, string | null>>(
-      `/v1/appStoreVersions/${encodeURIComponent(versionId)}/appStoreReviewDetail?fields[appStoreReviewDetails]=contactFirstName,contactLastName,contactEmail,contactPhone`,
-    );
-    const resource = one(doc);
-    if (!resource) return undefined;
-    return {
-      contactFirstName: resource.attributes.contactFirstName ?? null,
-      contactLastName: resource.attributes.contactLastName ?? null,
-      contactEmail: resource.attributes.contactEmail ?? null,
-      contactPhone: resource.attributes.contactPhone ?? null,
-    };
-  } catch (error) {
-    if (error instanceof AscError && error.status === 404) return undefined;
-    throw error;
-  }
-}
-
-/** The app's content rights declaration and primary locale. */
-export async function appReleaseInfo(appId: string): Promise<{ contentRights: string | null; primaryLocale: string }> {
-  const doc = await get<{ contentRightsDeclaration?: string | null; primaryLocale?: string }>(
-    `/v1/apps/${encodeURIComponent(appId)}?fields[apps]=contentRightsDeclaration,primaryLocale`,
-  );
-  const app = one(doc);
-  return { contentRights: app?.attributes.contentRightsDeclaration ?? null, primaryLocale: app?.attributes.primaryLocale ?? "en-US" };
-}
+/** The contact fields the checks read, from the review detail asc/metadata.ts reads (undefined when there's none yet). */
+export const toReviewContact = (detail: ReviewDetail | undefined): ReviewContact | undefined =>
+  detail && {
+    contactFirstName: text(detail.attributes.contactFirstName),
+    contactLastName: text(detail.attributes.contactLastName),
+    contactEmail: text(detail.attributes.contactEmail),
+    contactPhone: text(detail.attributes.contactPhone),
+  };
 
 /** One pre-submission check. A blocking one that fails stops `ship release submit`. */
 export interface Check {
