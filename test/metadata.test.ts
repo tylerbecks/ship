@@ -165,6 +165,20 @@ describe("the field table", () => {
     expect(pull.app.release).toEqual({ type: "AFTER_APPROVAL", phased: false });
   });
 
+  test("a cleared password is sent even when App Store Connect hides it", () => {
+    const page = remote();
+    const { demoAccountPassword: _, ...attributes } = page.review!.attributes;
+    const hidden = remote({ review: { id: "rd2", attributes } });
+    const local = localFromPull(planPull(hidden, undefined));
+    expect(planMetadata(local, hidden).ops).toEqual([]);
+    local.app!.review = { ...local.app!.review, demoAccountPassword: null };
+    const plan = planMetadata(local, hidden);
+    expect(changesJSON(plan.all)).toEqual([{ scope: "review", field: "demoAccountPassword", kind: "remove", from: MASK, to: null, secret: true }]);
+    expect(plan.ops.map((op) => [op.method, op.path, (op.body as { data: { attributes: unknown } }).data.attributes])).toEqual([
+      ["PATCH", "/v1/appStoreReviewDetails/rd2", { demoAccountPassword: null }],
+    ]);
+  });
+
   test("pull --locale writes only that language", () => {
     const pull = planPull(remote(), undefined, { locales: ["de-DE"] });
     expect(pull.locales).toEqual(["de-DE"]);

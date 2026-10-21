@@ -498,6 +498,12 @@ describe("testflight test information", () => {
     expect(planBetaInfo(local, hidden).password).toBeUndefined();
     const withNotes = planBetaInfo({ ...local, notes: "Changed" }, hidden);
     expect(withNotes.password).toBe("set");
+    // "" or null asks for no password: sent even when Apple hides it and nothing else changes.
+    for (const empty of ["", null]) {
+      const clearHidden = planBetaInfo({ ...emptyInfo(), review: { demoAccountPassword: empty } }, hidden);
+      expect(clearHidden.password).toBe("clear");
+      expect(changesJSON(clearHidden.changes)).toEqual([{ scope: "testflight/review", field: "demoAccountPassword", kind: "remove", from: "••••", to: null, secret: true }]);
+    }
 
     const unset = remoteInfo({ review: { demoAccountPassword: null } });
     expect(planBetaInfo(local, unset).changes[0]).toMatchObject({ field: "demoAccountPassword", kind: "add", secret: true });

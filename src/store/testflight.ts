@@ -293,10 +293,15 @@ export function planBetaInfo(local: BetaInfoFiles, remote: RemoteBetaInfo, optio
     const shown = "demoAccountPassword" in remote.review.attributes;
     const remotePassword = remote.review.attributes.demoAccountPassword;
     const clear = !demoAccountPassword;
-    if (!shown) {
+    if (!shown && clear) {
+      // Apple didn't say whether there's one, and "" or null asks for none: always send the clear.
+      plan.passwordHidden = true;
+      plan.password = "clear";
+      plan.changes.push({ scope: "testflight/review", field: "demoAccountPassword", kind: "remove", from: MASK, to: null, secret: true });
+    } else if (!shown) {
       // Apple didn't say, so it can't be compared: send it with the other changes.
       plan.passwordHidden = true;
-      if (reviewChanges.length) plan.password = clear ? "clear" : "set";
+      if (reviewChanges.length) plan.password = "set";
     } else if (clear ? Boolean(remotePassword) : !remotePassword || (options.resolvedPassword !== undefined && remotePassword !== options.resolvedPassword)) {
       plan.password = clear ? "clear" : "set";
       const kind = clear ? "remove" : remotePassword ? "change" : "add";

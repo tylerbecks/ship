@@ -557,6 +557,10 @@ function planReview(plan: Plan, local: LocalMetadata, remote: RemoteMetadata, op
     }
   }
   const changes = diffRecord("review", existing?.attributes, desired, { secret: ["demoAccountPassword"] });
+  if (existing && (reference === null || reference === "") && !("demoAccountPassword" in existing.attributes)) {
+    // App Store Connect doesn't say whether there's a password, so a clear is always sent.
+    changes.push({ scope: "review", field: "demoAccountPassword", kind: "remove", from: MASK, to: null, secret: true });
+  }
   if (deferred) {
     // App Store Connect didn't say what the password is, so it's sent along with other review changes.
     if (changes.length) {

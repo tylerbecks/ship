@@ -94,7 +94,10 @@ export async function testflight(ctx: Context) {
     ui.result({ changes: changesJSON(plan.changes), hasChanges, onlyRemote, passwordHidden: plan.passwordHidden }, () => {
       console.log(hasChanges ? renderChanges(plan.changes) : `No changes: App Store Connect matches ${shown}.`);
       if (onlyRemote.length) console.log(`\nOnly in App Store Connect: ${onlyRemote.join(", ")} (\`ship testflight push --prune\` deletes them)`);
-      if (plan.password && plan.passwordHidden) console.log("\nThe demo account password goes with the other review changes (App Store Connect doesn't show it).");
+      if (plan.password === "set" && plan.passwordHidden) console.log("\nThe demo account password goes with the other review changes (App Store Connect doesn't show it).");
+      if (plan.password === "clear" && plan.passwordHidden) {
+        console.log("\nApp Store Connect doesn't show the demo account password, so push clears it every time. Once it's cleared, leave demoAccountPassword out of review.json.");
+      }
     });
     if (hasChanges && boolFlag(ctx, "exit-code")) process.exitCode = 1;
     return;
