@@ -222,6 +222,19 @@ ship metadata validate    # lengths, keyword bytes, URLs, app.json values, and s
 
 `keywords.txt` holds one keyword per line (push joins them with commas; the 100-byte limit counts the commas). A new language folder is added on push; it needs a `name.txt`.
 
+**Pull shows what's left to fill in.** A field App Store Connect has empty gets an empty file (What's New only once the app has been released), so a new app's folder lists every field, and an empty file changes nothing on push. Pull then lists what App Review still needs, from the same checks `ship release submit` makes, plus a primary category and the age rating questions:
+
+```
+App Review still needs:
+  No description in en-US
+  No support URL in en-US
+  No 6.9" or 6.5" iPhone screenshots in en-US
+  No copyright
+  …
+```
+
+With `--json`, those are `missing` (each with `name`, `detail`, `blocking`, and `fix`), and the empty files are `placeholders`.
+
 **When things can change.** Apple takes most changes only while a version is being prepared. Promotional text and content rights change any time; name, subtitle, privacy URLs, categories, and age rating change on the App Info being prepared; everything else on the version being prepared (or `--version <x.y>`). When something can't change yet, push stops and lists it; `--partial` pushes the rest. What's New is skipped on an app's first version, and the phased release and a scheduled release date are set by `ship release`, not push.
 
 **The demo account password** in `app.json` is a reference, never the password: `"demoAccountPassword": "keychain:ship/lift-demo-password"` (or `op://…`, `env:…`, `file:…`; see [Secrets](#secrets)). `ship secret set keychain:ship/lift-demo-password --stdin` saves it. Pull never writes the password, `validate` and push refuse one written out or one that points at ship's own secrets (the API key or the 1Password token, which push would send to App Store Connect), and diff and push show it as `••••`. Left out, App Store Connect's password stays as it is; `""` or `null` clears it.

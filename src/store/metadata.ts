@@ -46,7 +46,7 @@ import {
   versionLocalizations,
   versionPath,
 } from "../asc/metadata";
-import { phasedRelease } from "../asc/release";
+import { type Check, phasedRelease, preflightChecks, screenshotTypes, toInfoLocalization, toReviewContact, toVersionLocalization } from "../asc/release";
 import {
   type AppInfo,
   type AppStoreVersion,
@@ -68,7 +68,9 @@ import type { Problem } from "./check";
 import { type PushResult, type StoreApp, localeDirs, orderStoreApp, readText, writeStoreApp, writeText } from "./files";
 import {
   AGE_RATING_DEPRECATED,
+  AGE_RATING_FLAGS,
   AGE_RATING_KEYS,
+  AGE_RATING_LEVELS,
   LOCALE_FIELDS,
   type LocaleTarget,
   PLAINTEXT_SECRET,
@@ -732,8 +734,14 @@ export async function pushMetadata(
 /** What pull writes: file contents by path in the store folder, and the paths to empty when they exist. */
 export interface PullPlan {
   files: Record<string, string>;
-  /** Fields App Store Connect has empty: their files are emptied if they have text, and never created. */
+  /** Fields App Store Connect has empty: their files are emptied if they have text. */
   clear: string[];
+  /**
+   * Empty files pull creates when they're missing, so the folder shows every
+   * field there is to fill in. Only for languages App Store Connect has (an
+   * empty file there changes nothing), and never What's New on a first version.
+   */
+  placeholders: string[];
   app: StoreApp;
   locales: string[];
   warnings: string[];
@@ -743,6 +751,7 @@ export interface PullPlan {
 export function planPull(remote: RemoteMetadata, existing: StoreApp | undefined, options: { locales?: string[]; appName?: string } = {}): PullPlan {
   const files: Record<string, string> = {};
   const clear: string[] = [];
+  const placeholders: string[] = [];
   const warnings: string[] = [];
   const infoByLocale = new Map(remote.appInfoLocalizations.map((loc) => [loc.locale, loc]));
   const versionByLocale = new Map(remote.versionLocalizations.map((loc) => [loc.locale, loc]));
@@ -751,13 +760,21 @@ export function planPull(remote: RemoteMetadata, existing: StoreApp | undefined,
     const written = { ...localeFiles(infoByLocale.get(locale)?.attributes ?? {}, "appInfo"), ...localeFiles(versionByLocale.get(locale)?.attributes ?? {}, "version") };
     for (const entry of LOCALE_FIELDS) {
       const path = `${locale}/${entry.file}`;
-      if (written[entry.file] !== undefined) files[path] = written[entry.file]!;
-      else clear.push(path);
+      if (written[entry.file] !== undefined) {
+        files[path] = written[entry.file]!;
+        continue;
+      }
+      clear.push(path);
+      const exists = (entry.target === "appInfo" ? infoByLocale : versionByLocale).has(locale);
+      if (exists && !(entry.field === "whatsNew" && remote.firstVersion)) placeholders.push(path);
     }
   }
   const notes = remote.review?.attributes.notes;
   if (typeof notes === "string" && notes.trim()) files[REVIEW_NOTES_FILE] = notes.replace(/\r\n?/g, "\n").trimEnd();
-  else clear.push(REVIEW_NOTES_FILE);
+  else {
+    clear.push(REVIEW_NOTES_FILE);
+    if (remote.version) placeholders.push(REVIEW_NOTES_FILE);
+  }
 
   const app: StoreApp = { ...(existing ?? {}) };
   const set = <K extends keyof StoreApp>(key: K, value: StoreApp[K] | undefined | null | "") => {
@@ -792,7 +809,34 @@ export function planPull(remote: RemoteMetadata, existing: StoreApp | undefined,
     if (remote.phased !== undefined) release.phased = remote.phased;
     set("release", Object.keys(release).length ? release : undefined);
   }
-  return { files, clear, app: orderStoreApp(app), locales, warnings };
+  return { files, clear, placeholders, app: orderStoreApp(app), locales, warnings };
+}
+
+/**
+ * What App Review still needs that App Store Connect doesn't have, from what
+ * pull read: `ship release submit`'s checks except the build, plus a primary
+ * category and the age rating questions. Only the ones that fail. Pure.
+ */
+export function stillNeeded(remote: RemoteMetadata, screenshots: string[]): Check[] {
+  const version = remote.version;
+  if (!version) return [];
+  const checks = preflightChecks({
+    platform: version.platform,
+    update: !remote.firstVersion,
+    primaryLocale: remote.app.primaryLocale,
+    copyright: version.copyright ?? null,
+    versionLocalizations: remote.versionLocalizations.map(toVersionLocalization),
+    infoLocalizations: remote.appInfoLocalizations.map(toInfoLocalization),
+    screenshots,
+    review: toReviewContact(remote.review),
+    contentRights: remote.app.contentRights,
+  }).filter((check) => check.name !== "build");
+  const add = (name: string, ok: boolean, detail: string, fix: string) => checks.push({ name, ok, detail, blocking: true, ...(ok ? {} : { fix }) });
+  add("category", Boolean(remote.categories?.primary), "No primary category", 'Set "categories" in appstore/app.json and run `ship metadata push`.');
+  const questions = [...AGE_RATING_LEVELS, ...AGE_RATING_FLAGS];
+  const answered = Object.entries(remote.ageRating?.attributes ?? {}).some(([key, value]) => questions.includes(key) && value !== null && value !== undefined);
+  add("ageRating", answered, "The age rating questions aren't answered", 'Answer them under "ageRating" in appstore/app.json and run `ship metadata push`.');
+  return checks.filter((check) => !check.ok);
 }
 
 /** app.json's review from App Store Connect's: never the password, which stays a reference. */
@@ -829,8 +873,12 @@ export interface PullResult {
   appInfo: ReturnType<typeof appInfoSummary>;
   locales: string[];
   written: string[];
+  /** The empty files pull created, for fields there's still to fill in. */
+  placeholders: string[];
   unchanged: string[];
   warnings: string[];
+  /** What App Review still needs (see stillNeeded). */
+  missing: Check[];
 }
 
 /**
@@ -861,6 +909,12 @@ export async function pullMetadata(project: Project, options: MetadataOptions & 
     const current = await readText(join(dir, path));
     if (current) consider(path, current, "", true);
   }
+  const placeholders: string[] = [];
+  for (const path of pull.placeholders) {
+    if ((await readText(join(dir, path))) !== undefined) continue;
+    writes.push([path, ""]);
+    placeholders.push(path);
+  }
   const appChanged = existing === undefined ? Object.keys(pull.app).length > 0 : JSON.stringify(orderStoreApp(existing)) !== JSON.stringify(pull.app);
   if (existing !== undefined || appChanged) consider("app.json", existingText, "", appChanged);
 
@@ -872,6 +926,9 @@ export async function pullMetadata(project: Project, options: MetadataOptions & 
       { files: conflicts },
     );
   }
+  // The screenshots the checks need: those of the primary language, which App Review looks at.
+  const primary = remote.versionLocalizations.find((loc) => loc.locale === remote.app.primaryLocale);
+  const screenshots = primary ? await screenshotTypes(primary.id) : [];
   for (const [path, text] of writes) {
     if (path === "app.json") await writeStoreApp(project, pull.app);
     else await writeText(join(dir, path), text);
@@ -882,7 +939,9 @@ export async function pullMetadata(project: Project, options: MetadataOptions & 
     appInfo: appInfoSummary(remote.appInfo),
     locales: pull.locales,
     written: writes.map(([path]) => path).sort(),
+    placeholders: placeholders.sort(),
     unchanged: unchanged.sort(),
     warnings: pull.warnings,
+    missing: stillNeeded(remote, screenshots),
   };
 }

@@ -22,8 +22,9 @@ keywords, What's New, URLs, categories, age rating, and App Review details
 live as files in appstore/ (set "store" in ship.json to move it). Commit
 them, review changes in pull requests, and push them with ship.
 
-pull writes the files from App Store Connect; run it once to start.
-diff shows what push would change. push applies it to the version being
+pull writes the files from App Store Connect; run it once to start. Fields
+App Store Connect has empty get empty files, so every field shows, and pull
+lists what App Review still needs. diff shows what push would change. push applies it to the version being
 prepared, adding languages that have a folder. validate checks lengths,
 URLs, and secrets offline.
 
@@ -96,11 +97,24 @@ async function pull(project: Project, options: Options) {
     const version = result.version ? `version ${result.version.versionString} (${result.version.state.toLowerCase().replaceAll("_", " ")})` : "no version";
     if (!result.written.length) {
       console.log(`${where(project)}/ already matches App Store Connect (${version}).`);
-      return;
+    } else {
+      console.log(`Wrote ${result.written.length} file${result.written.length === 1 ? "" : "s"} to ${where(project)}/ from ${version}:`);
+      for (const path of result.written) console.log(`  ${path}${result.placeholders.includes(path) ? "  (empty)" : ""}`);
     }
-    console.log(`Wrote ${result.written.length} file${result.written.length === 1 ? "" : "s"} to ${where(project)}/ from ${version}:`);
-    for (const path of result.written) console.log(`  ${path}`);
-    console.log(`\nCommit them; change them and run \`ship metadata diff\`, then \`ship metadata push\`.`);
+    // The optional checks only matter while there's something App Review needs.
+    const needed = result.missing.some((check) => check.blocking);
+    if (needed) {
+      const optional = result.missing.filter((check) => !check.blocking);
+      console.log("\nApp Review still needs:");
+      for (const check of result.missing.filter((check) => check.blocking)) console.log(`  ${check.detail}`);
+      if (optional.length) console.log(["Optional:", ...optional.map((check) => `  ${check.detail}`)].join("\n"));
+    }
+    if (result.written.length || needed) {
+      const screenshots = needed && result.missing.some((check) => check.name === "screenshots");
+      console.log(
+        `\nFill in the files, commit them, and run \`ship metadata push\`${screenshots ? " (screenshots: \`ship screenshots push\`)" : ""}. \`ship metadata diff\` shows what it will change.`,
+      );
+    }
   });
 }
 

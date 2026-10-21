@@ -554,6 +554,12 @@ function asc(page: RemoteMetadata, options: { versions?: AppStoreVersion[]; info
       if (v[2] === "appStoreReviewDetail") return page.review && v[1] === page.version?.id ? { json: jsonApi(resource("appStoreReviewDetails", page.review.id, page.review.attributes)) } : { json: { data: null } };
       if (v[2] === "appStoreVersionPhasedRelease") return { json: { data: null } };
     }
+    // The primary language has 6.9" iPhone screenshots.
+    const sets = path.match(/^\/v1\/appStoreVersionLocalizations\/([^/]+)\/appScreenshotSets$/);
+    if (sets) {
+      const shots = { appScreenshots: { data: [{ type: "appScreenshots", id: "s1" }] } };
+      return { json: jsonApi(sets[1] === "vl-en" ? [resource("appScreenshotSets", "set1", { screenshotDisplayType: "APP_IPHONE_67" }, shots)] : []) };
+    }
     if (path === "/v1/appCategories") {
       return {
         json: jsonApi([
@@ -605,9 +611,18 @@ describe("pull and push", () => {
     expect(await Bun.file(join(p.storeDir, "app.json")).text()).not.toContain("s3cret-pass");
     expect(first.warnings).toHaveLength(1);
 
+    // Fields App Store Connect has empty get empty files.
+    expect(first.placeholders).toEqual(["de-DE/marketing-url.txt", "de-DE/privacy-choices-url.txt", "de-DE/privacy-policy-url.txt", "de-DE/promotional-text.txt", "de-DE/whats-new.txt", "en-US/marketing-url.txt", "en-US/privacy-choices-url.txt"]);
+    expect(await readText(join(p.storeDir, "de-DE", "whats-new.txt"))).toBe("");
+    // Nothing App Review needs; only German What's New and iPad screenshots, which it doesn't.
+    expect(first.missing.map((check) => `${check.name}${check.blocking ? "" : " (optional)"}`)).toEqual(["whatsNew (optional)", "ipadScreenshots (optional)"]);
+
     const second = await pullMetadata(p, { appId: "app1" });
     expect(second.written).toEqual([]);
-    expect(second.unchanged).toEqual(first.written);
+    expect(second.placeholders).toEqual([]);
+    expect(second.unchanged).toEqual(first.written.filter((path) => !first.placeholders.includes(path)));
+    // Empty files change nothing on push.
+    expect((await pushMetadata(p, { appId: "app1", dryRun: true })).changes).toEqual([]);
 
     await writeText(join(p.storeDir, "en-US", "description.txt"), "Edited here");
     await expect(pullMetadata(p, { appId: "app1" })).rejects.toMatchObject({ code: "local-changes", details: { files: ["en-US/description.txt"] } });
@@ -615,11 +630,55 @@ describe("pull and push", () => {
     const forced = await pullMetadata(p, { appId: "app1", force: true });
     expect(forced.written).toEqual(["en-US/description.txt"]);
 
-    // A field App Store Connect has empty empties a file that has text, but never creates one.
+    // A field App Store Connect has empty empties a file that has text.
     await writeText(join(p.storeDir, "en-US", "marketing-url.txt"), "https://old.example.com");
     expect((await pullMetadata(p, { appId: "app1", force: true })).written).toEqual(["en-US/marketing-url.txt"]);
     expect(await readText(join(p.storeDir, "en-US", "marketing-url.txt"))).toBe("");
-    expect(await readText(join(p.storeDir, "de-DE", "marketing-url.txt"))).toBeUndefined();
+  });
+
+  test("pull of an empty page writes every field and says what App Review needs", async () => {
+    const p = await project();
+    const empty = remote({
+      firstVersion: true,
+      version: { ...version("v2", "1.0", "PREPARE_FOR_SUBMISSION"), copyright: null },
+      app: { id: "app1", name: "Lift", primaryLocale: "en-US", contentRights: null },
+      categories: { primary: null, primarySubcategories: [], secondary: null, secondarySubcategories: [] },
+      ageRating: { id: "age2", attributes: { ageRatingOverrideV2: "NONE", koreaAgeRatingOverride: "NONE", gambling: null } },
+      appInfoLocalizations: [{ id: "il-en", locale: "en-US", attributes: { locale: "en-US", name: "Lift: AI Strength Coach" } }],
+      versionLocalizations: [{ id: "vl-empty", locale: "en-US", attributes: { locale: "en-US" } }],
+      review: undefined,
+    });
+    mock = serve(empty, { versions: [empty.version!], infos: [empty.appInfo!] });
+    const result = await pullMetadata(p, { appId: "app1" });
+    // Every field but What's New, which a first version doesn't have.
+    expect(result.placeholders).toEqual([
+      "en-US/description.txt",
+      "en-US/keywords.txt",
+      "en-US/marketing-url.txt",
+      "en-US/privacy-choices-url.txt",
+      "en-US/privacy-policy-url.txt",
+      "en-US/promotional-text.txt",
+      "en-US/subtitle.txt",
+      "en-US/support-url.txt",
+      "review-notes.txt",
+    ]);
+    expect(result.written).toContain("en-US/name.txt");
+    expect(result.missing.filter((check) => check.blocking).map((check) => check.name)).toEqual([
+      "description",
+      "keywords",
+      "supportUrl",
+      "privacyPolicyUrl",
+      "screenshots",
+      "copyright",
+      "reviewContact",
+      "contentRights",
+      "category",
+      "ageRating",
+    ]);
+    expect(result.missing.every((check) => check.fix)).toBe(true);
+    // Empty files and no review details send nothing.
+    expect((await pushMetadata(p, { appId: "app1", dryRun: true })).changes).toEqual([]);
+    expect(writes(mock.calls)).toEqual([]);
   });
 
   test("push sends only what changed, and dry-run sends nothing", async () => {
