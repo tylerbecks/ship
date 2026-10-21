@@ -5,7 +5,7 @@
 // reads the tags, and `git log testflight/<build>..origin/main` lists what
 // isn't shipped yet.
 
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { run } from "./exec";
 
@@ -201,6 +201,19 @@ export async function mainCheckout(dir: string): Promise<string | undefined> {
   if (result.code !== 0 || !result.stdout.trim()) return undefined;
   const common = real(resolve(dir, result.stdout.trim()));
   return basename(common) === ".git" ? dirname(common) : undefined;
+}
+
+/**
+ * Whether `dir` is inside a linked worktree (or a submodule): the nearest
+ * .git above it is a file pointing elsewhere, not the repo's folder. Only
+ * the file system, so it's cheap enough to ask of every app.
+ */
+export function inLinkedCheckout(dir: string): boolean {
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    const dotGit = join(at, ".git");
+    if (existsSync(dotGit)) return statSync(dotGit).isFile();
+    if (dirname(at) === at) return false;
+  }
 }
 
 /**

@@ -15,7 +15,7 @@ import {
   rememberApp,
 } from "../src/config";
 import { useCredentials } from "../src/credentials";
-import { canonicalRoot, checkoutTop, mainCheckout, parseWorktreeList, worktreeRoots } from "../src/git";
+import { canonicalRoot, checkoutTop, inLinkedCheckout, mainCheckout, parseWorktreeList, worktreeRoots } from "../src/git";
 import { ui } from "../src/ui";
 import { captureLog, git, jsonApi, mockAsc, noRetryDelay, temp, testCredentials } from "./helpers";
 
@@ -114,6 +114,17 @@ describe("the app list", () => {
     expect(await rememberApp({ name: "App", bundleId: "com.example.app", root: worktree })).toBe(main);
     const apps = await loadApps();
     expect(apps).toEqual([{ name: "App", bundleId: "com.example.app", root: main, addedAt: first }]);
+  });
+
+  test("a lone worktree entry moves to the main checkout while the worktree is there", async () => {
+    const { main, worktree } = await repoWithWorktree();
+    writeFileSync(appsPath, JSON.stringify([entry("App", "com.example.app", worktree, "2026-01-01T00:00:00.000Z")]));
+    const healed = [entry("App", "com.example.app", main, "2026-01-01T00:00:00.000Z")];
+    expect(await loadApps()).toEqual(healed);
+    expect(JSON.parse(await Bun.file(appsPath).text())).toEqual(healed);
+    expect(inLinkedCheckout(worktree)).toBe(true);
+    expect(inLinkedCheckout(join(worktree, "ios"))).toBe(true);
+    expect(inLinkedCheckout(main)).toBe(false);
   });
 
   test("loading heals an apps.json that lists a worktree, and writes it back", async () => {

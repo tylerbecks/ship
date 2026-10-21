@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { run } from "./exec";
-import { canonicalRoot, checkoutTop, mainCheckout, worktreeRoots } from "./git";
+import { canonicalRoot, checkoutTop, inLinkedCheckout, mainCheckout, worktreeRoots } from "./git";
 import { DEFAULT_PLATFORM, PLATFORM_NAMES, type Platform, isPlatform } from "./platform";
 import { STORE_DEFAULT } from "./store/files";
 import { ShipError, ui } from "./ui";
@@ -157,14 +157,17 @@ export async function loadApps(): Promise<AppEntry[]> {
   if (!Array.isArray(entries)) {
     throw new ShipError(`${appsFile} isn't a list of apps`, "bad-json", `Fix or delete ${appsFile}, then run \`ship init\` in each app's repo.`);
   }
-  // Only apps listed more than once can be duplicates, so only they cost a git call.
+  // A git call only for apps listed more than once (maybe duplicates) and for
+  // ones in a worktree, which move to the main checkout while the worktree is
+  // still there to say where that is.
   const counts = new Map<string, number>();
   for (const entry of entries) counts.set(entry.bundleId.toLowerCase(), (counts.get(entry.bundleId.toLowerCase()) ?? 0) + 1);
   const roots = new Map<string, string | undefined>();
   await Promise.all(
     entries.map(async (entry) => {
       const exists = existsSync(entry.root);
-      roots.set(entry.root, !exists ? undefined : (counts.get(entry.bundleId.toLowerCase()) ?? 0) > 1 ? await canonicalRoot(entry.root) : entry.root);
+      const check = exists && ((counts.get(entry.bundleId.toLowerCase()) ?? 0) > 1 || inLinkedCheckout(entry.root));
+      roots.set(entry.root, !exists ? undefined : check ? await canonicalRoot(entry.root) : entry.root);
     }),
   );
   const healed = dedupeApps(entries, (root) => roots.get(root));
