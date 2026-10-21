@@ -17,7 +17,9 @@ import type { AppStoreVersion } from "../src/asc/versions";
 import {
   ago,
   cancelReview,
+  cancelTarget,
   desiredTiming,
+  dryRunVerdict,
   parseRelease,
   pendingVersion,
   phasedCommand,
@@ -534,6 +536,35 @@ describe("pickSubmission", () => {
   });
 });
 
+describe("cancelTarget", () => {
+  const versions = [version("v15", "1.5", "PREPARE_FOR_SUBMISSION"), version("v14", "1.4", "WAITING_FOR_REVIEW")];
+
+  test("the one with App Review over a draft that comes first", () => {
+    const draft = submission("draft", "READY_FOR_REVIEW", [{ versionId: "v15" }]);
+    const waiting = submission("s14", "WAITING_FOR_REVIEW", [{ versionId: "v14" }]);
+    expect(cancelTarget([draft, waiting], versions).id).toBe("s14");
+  });
+
+  test("a rejected one when nothing's in review", () => {
+    expect(cancelTarget([submission("r", "UNRESOLVED_ISSUES", [{ versionId: "v14" }])], versions).id).toBe("r");
+  });
+
+  test("only a draft: nothing to cancel, and the hint says so", () => {
+    expect(() => cancelTarget([submission("draft", "READY_FOR_REVIEW", [{ versionId: "v15" }])], versions)).toThrow(
+      expect.objectContaining({ code: "nothing-in-review", hint: expect.stringContaining("never sent to App Review") }),
+    );
+  });
+
+  test("--version picks its own; two candidates name their versions", () => {
+    const a = submission("a", "UNRESOLVED_ISSUES", [{ versionId: "v15" }]);
+    const b = submission("b", "UNRESOLVED_ISSUES", [{ versionId: "v14" }]);
+    expect(cancelTarget([a, b], versions, versions[1]).id).toBe("b");
+    expect(() => cancelTarget([a, b], versions)).toThrow(
+      expect.objectContaining({ code: "ambiguous-submission", exitCode: 2, details: { choices: ["1.5", "1.4"] }, hint: "Pick one: ship release cancel --version 1.5" }),
+    );
+  });
+});
+
 // MARK: Pre-submission checks
 
 const ready: PreflightData = {
@@ -839,7 +870,9 @@ describe("release flows", () => {
     );
     const result = await submit(project, { version: "1.4", release: "manual", phased: true, dryRun: true, now: NOW });
     expect(writes(mock.calls)).toEqual([]);
-    expect(result).toMatchObject({ dryRun: true, created: true, submitted: false, releaseType: "MANUAL", phased: true });
+    expect(result).toMatchObject({ dryRun: true, created: true, submitted: false, releaseType: "MANUAL", phased: true, checks: [], checksRun: false });
+    // Without the version there's nothing to check, so it doesn't say it would submit.
+    expect(dryRunVerdict(result)).toBe("Would create 1.4; the checks run once it exists, so run this again after `ship release prepare`.");
     expect(result.steps).toEqual([
       "Create version 1.4",
       "Answer export compliance (exempt: only Apple's encryption)",
@@ -862,6 +895,9 @@ describe("release flows", () => {
     const result = await submit(project, { version: "1.4", dryRun: true, now: NOW });
     expect(writes(mock.calls)).toEqual([]);
     expect(blockingFailures(result.checks).map((c) => c.name)).toEqual(["screenshots"]);
+    expect(result).toMatchObject({ checksRun: true, checksBeforePush: false });
+    expect(dryRunVerdict(result)).toBe("Would stop: screenshots must be fixed first.");
+    expect(dryRunVerdict({ ...result, checksBeforePush: true })).toBe("Would stop: screenshots must be fixed first (checked before the push, which may fix some).");
   });
 
   test("submit stops when a blocking check fails, before any submission", async () => {
@@ -1001,7 +1037,13 @@ describe("release flows", () => {
 
   test("cancel takes the open submission out of review", async () => {
     mock = mockAsc(asc({ versions: [live], builds: [], submissions: [{ id: "s1", state: "WAITING_FOR_REVIEW", versionIds: ["v14"] }] }));
-    expect(await cancelReview(project, { now: NOW })).toEqual({ submission: { id: "s1", state: "CANCELING" }, canceled: true, dryRun: false });
+    expect(await cancelReview(project, { now: NOW })).toEqual({
+      submission: { id: "s1", state: "CANCELING" },
+      canceled: true,
+      dryRun: false,
+      version: null,
+      from: "WAITING_FOR_REVIEW",
+    });
     expect(mock.calls.find((call) => call.method === "PATCH")!.body).toEqual({ data: { type: "reviewSubmissions", id: "s1", attributes: { canceled: true } } });
     mock.restore();
 

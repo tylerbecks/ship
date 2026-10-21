@@ -45,7 +45,7 @@ import {
 } from "../asc/release";
 import { type AppStoreVersion, LIVE_VERSION_STATES, appInfos, appStoreVersions, editableAppInfo, liveAppInfo, pickVersion } from "../asc/versions";
 import { checkBuildNumber } from "../build";
-import { type Command, type Context, boolFlag, checkActionFlags, stringFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags, checkArgs, flagHint, stringFlag } from "../command";
 import { type Project, loadProject } from "../config";
 import { type AscPlatform, fromAscPlatform, parsePlatform, platformInfo } from "../platform";
 import { type PushResult, type StoreApp, readStoreApp } from "../store/files";
@@ -442,6 +442,10 @@ export async function prepare(project: Project, options: ReleaseOptions): Promis
 
 export interface SubmitResult extends PrepareResult {
   checks: Check[];
+  /** Whether the checks ran: a dry run for a version that doesn't exist yet can't check it. */
+  checksRun: boolean;
+  /** A dry run with --push checks App Store Connect as it is, before the push would change it. */
+  checksBeforePush: boolean;
   submission: { id: string; state: string; submittedDate: string | null } | null;
   submitted: boolean;
   alreadyInReview: boolean;
@@ -514,6 +518,8 @@ export async function submit(project: Project, options: ReleaseOptions): Promise
       releaseType: known?.releaseType ?? null,
       earliestReleaseDate: known?.earliestReleaseDate ?? null,
       checks: [],
+      checksRun: false,
+      checksBeforePush: false,
       submission: submissionJSON(submission),
       submitted: false,
       alreadyInReview: true,
@@ -522,7 +528,12 @@ export async function submit(project: Project, options: ReleaseOptions): Promise
 
   const { result, version, build } = await prepareVersion(context, versionString, plan, options);
   const checks = version ? await preflight(context, version, build, dryRun) : [];
+  const checksRun = Boolean(version);
+  // A dry run doesn't push, so its checks see the page before the push would change it.
+  const pushes = [result.pushed.metadata, result.pushed.media].some((pushed) => pushed && pushed.changes.length && !pushed.applied);
+  const checksBeforePush = dryRun && checksRun && pushes;
   if (!version) ui.note("The checks run once the version exists");
+  if (checksBeforePush) ui.note("The checks read App Store Connect before the push; the real run checks again after pushing");
   const blocking = blockingFailures(checks);
   if (blocking.length && !dryRun) {
     throw new ShipError(
@@ -538,7 +549,7 @@ export async function submit(project: Project, options: ReleaseOptions): Promise
     const step = reuse ? `Submit ${versionString} with the ${reuse.state === "UNRESOLVED_ISSUES" ? "rejected" : "draft"} submission` : `Create a submission and submit ${versionString}`;
     result.steps.push(step);
     ui.note(`Would ${step.charAt(0).toLowerCase()}${step.slice(1)}`);
-    return { ...result, checks, submission: submissionJSON(reuse), submitted: false, alreadyInReview: false };
+    return { ...result, checks, checksRun, checksBeforePush, submission: submissionJSON(reuse), submitted: false, alreadyInReview: false };
   }
 
   let submission: ReviewSubmission;
@@ -557,7 +568,7 @@ export async function submit(project: Project, options: ReleaseOptions): Promise
   const sent = (await submitSubmission(submission.id)) ?? { ...submission, state: "WAITING_FOR_REVIEW" };
   ui.ok(`Submitted ${versionString} for review`);
   result.steps.push(`Submitted ${versionString} for review`);
-  return { ...result, checks, submission: submissionJSON(sent), submitted: true, alreadyInReview: false };
+  return { ...result, checks, checksRun, checksBeforePush: false, submission: submissionJSON(sent), submitted: true, alreadyInReview: false };
 }
 
 // MARK: status
@@ -723,22 +734,58 @@ export async function releaseNow(project: Project, options: ReleaseOptions): Pro
   return { version: version.versionString, released: !options.dryRun, dryRun: Boolean(options.dryRun) };
 }
 
-export async function cancelReview(project: Project, options: ReleaseOptions): Promise<{ submission: { id: string; state: string }; canceled: boolean; dryRun: boolean }> {
-  const context = await releaseContext(project, options);
-  const version = options.version ? namedVersion(context.versions, options.version) : undefined;
-  const submissions = (await openSubmissions(context.appId, context.platform)).filter((s) => CANCELABLE_STATES.includes(s.state));
-  const target = version ? submissions.find((s) => hasVersion(s, version.id)) : submissions[0];
-  if (!target) {
+export interface CancelResult {
+  submission: { id: string; state: string };
+  canceled: boolean;
+  dryRun: boolean;
+  /** The version the submission is for, when ship knows it. */
+  version: string | null;
+  /** The submission's state before: WAITING_FOR_REVIEW, IN_REVIEW, or UNRESOLVED_ISSUES (rejected). */
+  from: string;
+}
+
+/**
+ * The submission `ship release cancel` takes back: --version's, else the one
+ * with App Review, else a rejected one. A draft was never sent, so it isn't
+ * one; two candidates is an error naming their versions.
+ */
+export function cancelTarget(submissions: ReviewSubmission[], versions: AppStoreVersion[], version?: AppStoreVersion): ReviewSubmission {
+  const open = submissions.filter((s) => CANCELABLE_STATES.includes(s.state));
+  const versionOf = (submission: ReviewSubmission) => versions.find((v) => hasVersion(submission, v.id))?.versionString;
+  const mine = version ? open.filter((s) => hasVersion(s, version.id)) : open;
+  const inReview = mine.filter((s) => IN_REVIEW_STATES.includes(s.state));
+  const candidates = inReview.length ? inReview : mine;
+  if (candidates.length > 1) {
+    const choices = candidates.map((s) => versionOf(s) ?? s.id);
     throw new ShipError(
-      version ? `${version.versionString} has nothing in review` : "There's nothing in review",
-      "nothing-in-review",
-      "`ship release status` shows where things are.",
+      `${candidates.length} submissions could be canceled: ${choices.join(", ")}`,
+      "ambiguous-submission",
+      `Pick one: ship release cancel --version ${candidates.map(versionOf).find(Boolean) ?? "<x.y>"}`,
+      { choices },
+      2,
     );
   }
-  if (options.dryRun) return { submission: { id: target.id, state: target.state }, canceled: false, dryRun: true };
-  ui.step("Taking the submission out of review");
+  if (candidates[0]) return candidates[0];
+  const draft = submissions.find((s) => s.state === "READY_FOR_REVIEW" && (!version || hasVersion(s, version.id)));
+  throw new ShipError(
+    version ? `${version.versionString} has nothing in review` : "There's nothing in review",
+    "nothing-in-review",
+    draft
+      ? "There's a draft submission, but it was never sent to App Review, so there's nothing to cancel. `ship release submit` sends it."
+      : "`ship release status` shows where things are.",
+  );
+}
+
+export async function cancelReview(project: Project, options: ReleaseOptions): Promise<CancelResult> {
+  const context = await releaseContext(project, options);
+  const version = options.version ? namedVersion(context.versions, options.version) : undefined;
+  const target = cancelTarget(await openSubmissions(context.appId, context.platform), context.versions, version);
+  const versionString = version?.versionString ?? context.versions.find((v) => hasVersion(target, v.id))?.versionString ?? null;
+  const about = { version: versionString, from: target.state };
+  if (options.dryRun) return { submission: { id: target.id, state: target.state }, canceled: false, dryRun: true, ...about };
+  ui.step(target.state === "UNRESOLVED_ISSUES" ? "Canceling the rejected submission" : "Taking the submission out of review");
   const canceled = await cancelSubmission(target.id);
-  return { submission: { id: target.id, state: canceled?.state ?? "CANCELING" }, canceled: true, dryRun: false };
+  return { submission: { id: target.id, state: canceled?.state ?? "CANCELING" }, canceled: true, dryRun: false, ...about };
 }
 
 export async function phasedCommand(project: Project, action: string | undefined, options: ReleaseOptions) {
@@ -783,6 +830,15 @@ function printChecks(checks: Check[]) {
   for (const check of checks) console.log(`${check.ok ? "✓" : check.blocking ? "✗" : "!"} ${check.detail}${!check.ok && check.fix ? `\n    ${check.fix}` : ""}`);
 }
 
+/** What a dry-run submit would end with, for people. */
+export function dryRunVerdict(result: SubmitResult): string {
+  if (!result.checksRun) return `Would create ${result.version}; the checks run once it exists, so run this again after \`ship release prepare\`.`;
+  const blocking = blockingFailures(result.checks);
+  const before = result.checksBeforePush ? " (checked before the push, which may fix some)" : "";
+  if (blocking.length) return `Would stop: ${blocking.map((c) => c.name).join(", ")} must be fixed first${before}.`;
+  return `Would submit ${result.version} for review${result.checksBeforePush ? " (checked before the push; the real run checks again after it)" : ""}.`;
+}
+
 // MARK: Command
 
 const ACTIONS = ["status", "prepare", "submit", "go", "cancel", "phased"];
@@ -825,6 +881,10 @@ async function release(ctx: Context) {
     throw new ShipError(`Unknown release action "${action}"`, "usage", `Pick one: ship release ${ACTIONS.join(" | ")}`, { choices: ACTIONS }, 2);
   }
   checkActionFlags(ctx, "release", action, ACTION_FLAGS);
+  // phased takes its own action (pause, resume, complete); the rest take nothing.
+  const named = ctx.args.slice(0, action === "phased" ? 2 : 1);
+  const given = ctx.args.slice(named.length);
+  checkArgs(given, 0, `ship release ${named.join(" ") || action} takes no ${action === "phased" ? "other " : ""}arguments`, flagHint(given[0], ["version"], "See `ship release --help`."));
   const options = releaseOptions(ctx);
   const project = await loadProject({ app: ctx.app });
   switch (action) {
@@ -848,10 +908,7 @@ async function release(ctx: Context) {
         printPrepare(result);
         printChecks(result.checks);
         if (result.submitted) console.log(`Submitted ${result.version} for review (usually a day or two). \`ship release status\` follows it.`);
-        else if (result.dryRun) {
-          const blocking = blockingFailures(result.checks);
-          console.log(blocking.length ? `Would stop: ${blocking.map((c) => c.name).join(", ")} must be fixed first.` : `Would submit ${result.version} for review.`);
-        }
+        else if (result.dryRun) console.log(dryRunVerdict(result));
       });
       return;
     }
@@ -862,7 +919,15 @@ async function release(ctx: Context) {
     }
     case "cancel": {
       const result = await cancelReview(project, options);
-      ui.result(result, () => console.log(result.dryRun ? "Would take the submission out of review." : "Took the submission out of review. Change what you need, then `ship release submit` again."));
+      const which = result.version ? `${result.version}'s ` : "the ";
+      const what = result.from === "UNRESOLVED_ISSUES" ? `cancel ${which}rejected submission` : `take ${which}submission out of review`;
+      ui.result(result, () =>
+        console.log(
+          result.dryRun
+            ? `Would ${what}.`
+            : `${result.from === "UNRESOLVED_ISSUES" ? `Canceled ${which}rejected submission` : `Took ${which}submission out of review`}. Change what you need, then \`ship release submit\` again.`,
+        ),
+      );
       return;
     }
     case "phased": {

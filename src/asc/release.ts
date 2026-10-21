@@ -174,8 +174,8 @@ export const OPEN_SUBMISSION_STATES = ["READY_FOR_REVIEW", "WAITING_FOR_REVIEW",
 /** States in which a submission is with Apple, and can't take another version. */
 export const IN_REVIEW_STATES = ["WAITING_FOR_REVIEW", "IN_REVIEW"];
 
-/** States `ship release cancel` can take back. */
-export const CANCELABLE_STATES = ["READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW", "UNRESOLVED_ISSUES"];
+/** States `ship release cancel` can take back: with App Review, or rejected. A draft (READY_FOR_REVIEW) was never sent. */
+export const CANCELABLE_STATES = [...IN_REVIEW_STATES, "UNRESOLVED_ISSUES"];
 
 export interface SubmissionItem {
   id: string;
