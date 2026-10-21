@@ -7,6 +7,7 @@ import { commands, expireAll, listFilter, parseAge, pickBuildsToExpire } from ".
 import { expiringSoon } from "../src/commands/status";
 import { loadProject } from "../src/config";
 import {
+  checkNotesStdin,
   cleanSubject,
   commitSubjects,
   compareBuildNumbers,
@@ -319,6 +320,13 @@ describe("whatToTest", () => {
     expect(error.code).toBe("notes-file-missing");
     expect(error.hint).toContain("--notes");
     expect((await code(() => readNotesFile(dir))).code).toBe("notes-file-missing");
+  });
+
+  test("--notes-file - refuses to wait on a terminal, which would be a prompt", () => {
+    expect(() => checkNotesStdin("-", true)).toThrow(expect.objectContaining({ code: "usage", exitCode: 2, hint: expect.stringContaining("| ship beta --notes-file -") }));
+    expect(() => checkNotesStdin("-", false)).not.toThrow();
+    expect(() => checkNotesStdin("notes.txt", true)).not.toThrow();
+    expect(() => checkNotesStdin(undefined, true)).not.toThrow();
   });
 
   test("notes over TestFlight's 4,000 characters are an error", async () => {

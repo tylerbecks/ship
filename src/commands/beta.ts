@@ -7,8 +7,8 @@ import { archive, buildPaths, checkBuildNumber, checkInfo, exportIPA, packageInf
 import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
 import { type Commit, type Tagging, commitSetting, drift, headCommit, tagBuild, tagFor } from "../git";
-import { type Command, boolFlag, stringFlag } from "../command";
-import { whatToTest } from "../notes";
+import { type Command, boolFlag, checkArgs, stringFlag } from "../command";
+import { checkNotesStdin, whatToTest } from "../notes";
 import { type AscPlatform, platformInfo } from "../platform";
 import { ShipError, ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
@@ -344,8 +344,10 @@ export const commands: Command[] = [
       "dry-run": { type: "boolean" },
       "allow-dirty": { type: "boolean" },
     },
-    run: (ctx) =>
-      beta({
+    maxArgs: 0,
+    run: (ctx) => {
+      checkNotesStdin(stringFlag(ctx, "notes-file"));
+      return beta({
         app: ctx.app,
         notes: stringFlag(ctx, "notes"),
         notesFile: stringFlag(ctx, "notes-file"),
@@ -355,7 +357,8 @@ export const commands: Command[] = [
         wait: !boolFlag(ctx, "no-wait"),
         dryRun: boolFlag(ctx, "dry-run"),
         allowDirty: boolFlag(ctx, "allow-dirty"),
-      }),
+      });
+    },
   },
   {
     name: "distribute",
@@ -367,6 +370,8 @@ export const commands: Command[] = [
       if (!build) {
         throw new ShipError("Which build? ship distribute <build>", "usage", "`ship status` lists the build numbers.", undefined, 2);
       }
+      checkArgs(ctx.args, 1, "ship distribute takes one build number", `Distribute one build at a time: ship distribute ${build}`);
+      checkNotesStdin(stringFlag(ctx, "notes-file"));
       return distributeCommand(checkBuildNumber(build), {
         app: ctx.app,
         notes: stringFlag(ctx, "notes"),

@@ -2,8 +2,9 @@
 // the store folder, pulled from, compared with, and pushed to App Store
 // Connect.
 
+import { existsSync } from "node:fs";
 import { relative } from "node:path";
-import { type Command, type Context, boolFlag, checkActionFlags, listFlag, stringFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags, checkArgs, flagHint, listFlag, stringFlag } from "../command";
 import { loadProject } from "../config";
 import { changesJSON } from "../diff";
 import { parsePlatform } from "../platform";
@@ -155,6 +156,10 @@ async function push(ctx: Context) {
 
 async function validate(ctx: Context) {
   const project = await loadProject({ app: ctx.app });
+  // Like metadata and testflight validate: nothing to check isn't "valid", so CI notices a missing or misplaced folder.
+  if (!existsSync(project.storeDir)) {
+    throw new ShipError(`There's no ${where(project, project.storeDir)}/ folder yet`, "no-store", "Start it with `ship screenshots pull`.");
+  }
   const platform = stringFlag(ctx, "platform");
   const { problems, files } = await validateMedia(project.storeDir, { ...filters(ctx), platform: platform ? parsePlatform(platform) : project.platform });
   const valid = !problems.some((problem) => problem.severity === "error");
@@ -183,7 +188,11 @@ export const commands: Command[] = [
     },
     run: async (ctx) => {
       const action = ctx.args[0];
-      if (ACTIONS.includes(action ?? "")) checkActionFlags(ctx, "screenshots", action!, ACTION_FLAGS);
+      if (ACTIONS.includes(action ?? "")) {
+        checkActionFlags(ctx, "screenshots", action!, ACTION_FLAGS);
+        const given = ctx.args.slice(1);
+        checkArgs(given, 0, `ship screenshots ${action} takes no arguments`, flagHint(given[0], ["locale", "type", "version"], "See `ship screenshots --help`."));
+      }
       if (action === "pull") return pull(ctx);
       if (action === "diff") return diff(ctx);
       if (action === "push") return push(ctx);

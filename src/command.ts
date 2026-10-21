@@ -30,6 +30,8 @@ export interface Command {
   index: { section: Section; label: string; summary: string }[];
   help: string;
   flags: FlagSpec;
+  /** How many arguments it takes, for a command without actions; more is a usage error. */
+  maxArgs?: number;
   run(ctx: Context): Promise<void>;
 }
 
@@ -53,6 +55,30 @@ export function parseFlags(argv: string[], flags: FlagSpec): { values: Context["
     const message = (error instanceof Error ? error.message : String(error)).split(". ")[0] ?? "Bad arguments";
     throw new ShipError(message, "usage", "See `ship --help`.", undefined, 2);
   }
+}
+
+/**
+ * The command name and the rest of the arguments. The name is the first
+ * argument that isn't a global flag (or --app's value), so `ship --app Lift
+ * beta` runs beta. No name means status; a command name after another flag
+ * (`ship --dry-run beta`) is a usage error instead of a status run.
+ */
+export function splitCommand(argv: string[], names: string[]): { name?: string; rest: string[] } {
+  const global = new Set(Object.keys(globalFlags).map((name) => `--${name}`));
+  let i = 0;
+  for (; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (!arg.startsWith("-")) return { name: arg, rest: [...argv.slice(0, i), ...argv.slice(i + 1)] };
+    const flag = arg.split("=")[0]!;
+    if (flag !== "-h" && !global.has(flag)) break;
+    if (flag === "--app" && !arg.includes("=")) i++;
+  }
+  const late = argv.slice(i).find((arg) => names.includes(arg));
+  if (late) {
+    const rest = argv.filter((arg) => arg !== late);
+    throw new ShipError(`"${late}" comes after a flag, so ship can't tell it's the command`, "usage", `Put the command first: ship ${[late, ...rest].join(" ")}`, undefined, 2);
+  }
+  return { rest: argv };
 }
 
 // MARK: Reading flags
@@ -94,6 +120,28 @@ export function listFlag(ctx: Context, name: string): string[] {
   const value = ctx.flags[name];
   if (Array.isArray(value)) return value;
   return typeof value === "string" ? [value] : [];
+}
+
+/**
+ * Fails when there are more arguments than `max`, so a version or locale
+ * typed where its flag goes is a usage error instead of being ignored.
+ * `given` is what follows the command and action; `what` says what it takes,
+ * like "ship release go takes no arguments".
+ */
+export function checkArgs(given: string[], max: number, what: string, hint: string): void {
+  if (given.length > max) throw usage(`${what}, not "${given.join(" ")}"`, hint);
+}
+
+/** A hint for an argument that belongs in a flag: "Pass it as --version 1.3", or `fallback`. */
+export function flagHint(arg: string | undefined, flags: string[], fallback: string): string {
+  if (arg === undefined) return fallback;
+  const looks: Record<string, RegExp> = {
+    version: /^\d+(\.\d+){0,2}$/,
+    locale: /^[a-z]{2,3}(-[A-Za-z0-9]{2,4})*$/,
+    type: /^[A-Z][A-Z0-9_]+$/,
+  };
+  const flag = flags.find((name) => looks[name]?.test(arg));
+  return flag ? `Pass it as --${flag} ${arg}` : fallback;
 }
 
 /**

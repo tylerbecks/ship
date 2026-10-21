@@ -641,6 +641,22 @@ describe("the command", () => {
     await expect(run(["push"], { locale: ["english"] })).rejects.toMatchObject({ code: "usage", exitCode: 2 });
   });
 
+  test("an argument in a flag's place is a usage error naming the flag", async () => {
+    await expect(run(["push", "en-US"], { "dry-run": true })).rejects.toMatchObject({ code: "usage", exitCode: 2, hint: "Pass it as --locale en-US" });
+    await expect(run(["diff", "APP_IPHONE_67"])).rejects.toMatchObject({ code: "usage", hint: "Pass it as --type APP_IPHONE_67" });
+  });
+
+  test("validate without a store folder is no-store, not a pass", async () => {
+    const p = await project();
+    const cwd = process.cwd();
+    process.chdir(p.root);
+    try {
+      await expect(run(["validate"])).rejects.toMatchObject({ code: "no-store", hint: "Start it with `ship screenshots pull`." });
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
   test("validate's JSON", async () => {
     const p = await project();
     addFile(p, P("01.png"), png(1, 1));

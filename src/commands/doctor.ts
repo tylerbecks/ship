@@ -8,17 +8,17 @@ import { CONFIG_FILE, type Project, findConfigRoot, loadProject, loadSettings } 
 import { hasCredentials, serviceAccountToken } from "../credentials";
 import { run } from "../exec";
 import { hasGenericPassword } from "../keychain";
-import { parseKeychainRef } from "../secrets";
+import { parseKeychainRef, runOp } from "../secrets";
 import { validateMedia } from "../store/media";
 import { validateStore } from "../store/metadata";
 import { readBetaInfo, testflightDir, validateBetaInfo } from "../store/testflight";
 import { ShipError, ui } from "../ui";
 
-export const doctorHelp = `ship doctor
+export const doctorHelp = `ship doctor [--app <name>]
 
 Checks everything ship needs: Xcode, altool, the API key and the Keychain
-items or 1Password it reads from, this repo's ship.json, and (offline) the
-store folder, as the three validate commands would.`;
+items or 1Password it reads from, this repo's ship.json (or --app's), and
+(offline) the store folder, as the three validate commands would.`;
 
 /** The store folder's offline checks (all three validates), when there is one. */
 export async function checkStore(project: Project): Promise<{ name: string; ok: boolean; detail: string; fix: string } | undefined> {
@@ -47,7 +47,7 @@ export async function checkStore(project: Project): Promise<{ name: string; ok: 
   };
 }
 
-export async function doctor() {
+export async function doctor(app?: string) {
   const checks: { name: string; ok: boolean; detail: string; fix?: string }[] = [];
   const add = (name: string, ok: boolean, detail: string, fix?: string) => checks.push({ name, ok, detail, fix });
 
@@ -66,15 +66,17 @@ export async function doctor() {
   const usesOp = references.some((v) => v.startsWith("op://"));
   if (usesOp) {
     const token = await serviceAccountToken();
-    const op = await run(["op", "whoami", ...(settings.opAccount && !token ? ["--account", settings.opAccount] : [])], {
-      env: token ? { OP_SERVICE_ACCOUNT_TOKEN: token } : {},
-    });
-    add(
-      "1Password CLI",
-      op.code === 0,
-      op.code === 0 ? (token ? "service account" : "signed in (Touch ID)") : op.stderr.trim(),
-      token ? "The token may be revoked. Run `ship auth service-account <op://ref>` again." : "Sign in with `op signin`.",
-    );
+    try {
+      const op = await runOp(["whoami"], { what: "check 1Password", token, account: settings.opAccount });
+      add(
+        "1Password CLI",
+        op.code === 0,
+        op.code === 0 ? (token ? "service account" : "signed in (Touch ID)") : op.stderr.trim() || `op whoami exited ${op.code}`,
+        token ? "The token may be revoked. Run `ship auth service-account <op://ref>` again." : "Sign in with `op signin`.",
+      );
+    } catch (error) {
+      add("1Password CLI", false, error instanceof Error ? error.message : String(error), error instanceof ShipError ? error.hint : undefined);
+    }
   }
   if (await hasCredentials()) {
     try {
@@ -87,22 +89,31 @@ export async function doctor() {
     add("API key", false, "not set up", "Run `ship auth set` (see `ship auth --help`).");
   }
 
-  const root = findConfigRoot(process.cwd());
-  if (root) {
+  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  if (app || findConfigRoot(process.cwd())) {
+    let project: Project | undefined;
     try {
-      const project = await loadProject();
+      project = await loadProject({ app });
       add(CONFIG_FILE, true, `${project.config.name} (${project.config.bundleId}), scheme ${project.config.scheme}`);
+    } catch (error) {
+      // --app naming an unknown app has its own hint; a broken ship.json is fixed by init.
+      const hint = app && error instanceof ShipError && error.hint ? error.hint : "Run `ship init --force`.";
+      add(CONFIG_FILE, false, message(error), hint);
+    }
+    if (project) {
       const store = await checkStore(project);
       if (store) add(store.name, store.ok, store.detail, store.fix);
       if (await hasCredentials()) {
-        const app = await lookupApp(project.config.bundleId);
-        add("App Store Connect app", Boolean(app), app ? `${app.name} (${app.id})` : "not found", "Create it in App Store Connect → Apps → +.");
+        try {
+          const found = await lookupApp(project.config.bundleId);
+          add("App Store Connect app", Boolean(found), found ? `${found.name} (${found.id})` : "not found", "Create it in App Store Connect → Apps → +.");
+        } catch (error) {
+          add("App Store Connect app", false, message(error), error instanceof ShipError && error.hint ? error.hint : "Check the API key with `ship auth status`, and your connection.");
+        }
       }
-    } catch (error) {
-      add(CONFIG_FILE, false, error instanceof Error ? error.message : String(error), "Run `ship init --force`.");
     }
   } else {
-    add(CONFIG_FILE, false, "this folder isn't set up", "Run `ship init` in the app's repo.");
+    add(CONFIG_FILE, false, "this folder isn't set up", "Run `ship init` in the app's repo, or pass --app <name> (see `ship apps`).");
   }
 
   const healthy = checks.every((c) => c.ok);
@@ -121,6 +132,7 @@ export const commands: Command[] = [
     index: [{ section: "setup", label: "doctor", summary: "Check that everything's ready" }],
     help: doctorHelp,
     flags: {},
-    run: () => doctor(),
+    maxArgs: 0,
+    run: (ctx) => doctor(ctx.app),
   },
 ];

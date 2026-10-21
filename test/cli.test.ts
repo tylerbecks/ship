@@ -1,6 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import pkg from "../package.json";
-import { type Command, type Context, boolFlag, checkActionFlags, findCommand, indexLine, intFlag, listFlag, parseFlags, renderIndex, stringFlag } from "../src/command";
+import {
+  type Command,
+  type Context,
+  boolFlag,
+  checkActionFlags,
+  checkArgs,
+  findCommand,
+  flagHint,
+  indexLine,
+  intFlag,
+  listFlag,
+  parseFlags,
+  renderIndex,
+  splitCommand,
+  stringFlag,
+} from "../src/command";
 import { commands } from "../src/commands";
 
 /** `ship --help` before the registry, minus its first line (which has the version). */
@@ -138,5 +153,70 @@ describe("checkActionFlags", () => {
 
   test("the action's own flags, and flags no action lists, pass", () => {
     expect(() => checkActionFlags(ctx({ "dry-run": true, prune: true, json: true, locale: ["en-US"] }), "metadata", "push", takes)).not.toThrow();
+  });
+});
+
+describe("the command name", () => {
+  const names = commands.map((command) => command.name);
+
+  test("global flags can come before it", () => {
+    expect(splitCommand(["--app", "Lift", "beta", "--dry-run"], names)).toEqual({ name: "beta", rest: ["--app", "Lift", "--dry-run"] });
+    expect(splitCommand(["--json", "groups", "delete", "Beta"], names)).toEqual({ name: "groups", rest: ["--json", "delete", "Beta"] });
+    expect(splitCommand(["--app=Lift", "--quiet", "release", "submit"], names)).toEqual({ name: "release", rest: ["--app=Lift", "--quiet", "submit"] });
+    expect(splitCommand(["--help", "beta"], names)).toEqual({ name: "beta", rest: ["--help"] });
+  });
+
+  test("an app called like a command is still the app", () => {
+    expect(splitCommand(["--app", "status"], names)).toEqual({ rest: ["--app", "status"] });
+  });
+
+  test("no name means status; a name after a command's flag is a usage error", () => {
+    expect(splitCommand(["--json"], names)).toEqual({ rest: ["--json"] });
+    expect(splitCommand([], names)).toEqual({ rest: [] });
+    expect(usageError(() => splitCommand(["--dry-run", "beta"], names))).toEqual({ code: "usage", exitCode: 2, hint: "Put the command first: ship beta --dry-run" });
+  });
+});
+
+describe("arguments", () => {
+  const run = async (name: string, args: string[], flags: Context["flags"] = {}) => findCommand(commands, name)!.run({ args, flags, implicit: false });
+  const rejects = async (promise: Promise<unknown>) => {
+    try {
+      await promise;
+    } catch (error) {
+      return error as { code?: string; exitCode?: number; hint?: string; message: string };
+    }
+    throw new Error("expected an error");
+  };
+
+  test("checkArgs and flagHint", () => {
+    expect(() => checkArgs([], 0, "x", "y")).not.toThrow();
+    expect(usageError(() => checkArgs(["1.3"], 0, "ship release go takes no arguments", flagHint("1.3", ["version"], "See help.")))).toEqual({
+      code: "usage",
+      exitCode: 2,
+      hint: "Pass it as --version 1.3",
+    });
+    expect(flagHint("de-DE", ["locale", "version"], "help")).toBe("Pass it as --locale de-DE");
+    expect(flagHint("APP_IPHONE_67", ["locale", "type"], "help")).toBe("Pass it as --type APP_IPHONE_67");
+    expect(flagHint("banana!", ["locale", "version"], "help")).toBe("help");
+  });
+
+  test("an argument in a flag's place fails before anything else, instead of widening what runs", async () => {
+    // Outside a set-up repo these used to pass the usage checks and fail later with no-config.
+    for (const [name, args, hint] of [
+      ["release", ["go", "1.3"], "Pass it as --version 1.3"],
+      ["release", ["cancel", "1.4"], "Pass it as --version 1.4"],
+      ["release", ["status", "1.4"], "Pass it as --version 1.4"],
+      ["release", ["phased", "pause", "1.4"], "Pass it as --version 1.4"],
+      ["metadata", ["push", "de-DE"], "Pass it as --locale de-DE"],
+      ["version", ["set", "1.5", "1.6"], "For example: ship version set 1.5"],
+      ["distribute", ["41", "42"], "Distribute one build at a time: ship distribute 41"],
+    ] as const) {
+      expect(await rejects(run(name, [...args]))).toMatchObject({ code: "usage", exitCode: 2, hint });
+    }
+    expect((await rejects(run("release", ["go", "1.3"]))).message).toBe('ship release go takes no arguments, not "1.3"');
+  });
+
+  test("commands without actions say how many arguments they take", () => {
+    for (const name of ["status", "beta", "archive", "init", "apps", "remove", "doctor"]) expect(findCommand(commands, name)!.maxArgs).toBe(0);
   });
 });

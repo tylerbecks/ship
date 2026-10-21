@@ -184,8 +184,25 @@ export function resolveNotes(options: { notes?: string; file?: string; fromGit?:
   };
 }
 
+/**
+ * Fails when --notes-file - would read a terminal: waiting for someone to
+ * type is a prompt, and ship never prompts. Commands call it before anything
+ * else, so the mistake costs no requests.
+ */
+export function checkNotesStdin(path: string | undefined, isTTY = Boolean(process.stdin.isTTY)): void {
+  if (path !== "-" || !isTTY) return;
+  throw new ShipError(
+    "--notes-file - reads What to Test from a pipe, not the terminal",
+    "usage",
+    'For example: git log -1 --format=%B | ship beta --notes-file -, or pass --notes "…"',
+    undefined,
+    2,
+  );
+}
+
 /** A --notes-file's text ("-" reads stdin). */
 export async function readNotesFile(path: string): Promise<string> {
+  checkNotesStdin(path);
   if (path === "-") return (await Bun.stdin.text()).replace(/\r\n?/g, "\n").trimEnd();
   const full = resolve(path);
   if (!existsSync(full) || !statSync(full).isFile()) {

@@ -43,6 +43,7 @@ export const commands: Command[] = [
     index: [{ section: "daily", label: "archive", summary: "Archive and export without uploading" }],
     help: archiveHelp,
     flags: { build: { type: "string" } },
+    maxArgs: 0,
     run: (ctx) => {
       const build = stringFlag(ctx, "build");
       return archiveCommand({ app: ctx.app, build: build === undefined ? undefined : checkBuildNumber(build) });

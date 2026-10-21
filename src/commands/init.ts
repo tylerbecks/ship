@@ -191,6 +191,7 @@ export const commands: Command[] = [
     index: [{ section: "setup", label: "init", summary: "Find the app's project and scheme; write ship.json" }],
     help: initHelp,
     flags: { project: { type: "string" }, scheme: { type: "string" }, platform: { type: "string" }, force: { type: "boolean" } },
+    maxArgs: 0,
     run: (ctx) =>
       init({ project: stringFlag(ctx, "project"), scheme: stringFlag(ctx, "scheme"), platform: stringFlag(ctx, "platform"), force: boolFlag(ctx, "force") }),
   },

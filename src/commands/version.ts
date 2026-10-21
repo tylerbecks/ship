@@ -2,7 +2,7 @@
 // in the project's files. It never commits; that's yours to do.
 
 import { relative } from "node:path";
-import { type Command, boolFlag } from "../command";
+import { type Command, boolFlag, checkArgs } from "../command";
 import { loadProject } from "../config";
 import { ShipError, ui } from "../ui";
 import { BUMPS, type Bump, bumpVersion, checkVersion, projectVersion, writeProjectVersion } from "../version";
@@ -90,6 +90,7 @@ export const commands: Command[] = [
       if (!ACTIONS.includes(action)) {
         throw new ShipError(`Unknown version action "${action}"`, "usage", "Pick one: ship version, ship version bump <part>, or ship version set <x.y.z>", { choices: ACTIONS }, 2);
       }
+      checkArgs(ctx.args.slice(1), 1, `ship version ${action} takes one ${action === "bump" ? "part" : "version"}`, action === "bump" ? `Pick one: ship version bump ${BUMPS.join(" | ")}` : "For example: ship version set 1.5");
       return change(ctx.app, action, ctx.args[1], boolFlag(ctx, "dry-run"));
     },
   },

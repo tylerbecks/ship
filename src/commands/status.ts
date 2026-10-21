@@ -146,6 +146,7 @@ export const commands: Command[] = [
     ],
     help: statusHelp,
     flags: { all: { type: "boolean" }, limit: { type: "string" } },
+    maxArgs: 0,
     run: (ctx) => status({ app: ctx.app, all: boolFlag(ctx, "all"), limit: intFlag(ctx, "limit", { min: 1, max: 200 }) ?? 5 }),
   },
 ];

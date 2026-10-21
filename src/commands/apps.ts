@@ -64,6 +64,7 @@ export const commands: Command[] = [
     index: [{ section: "setup", label: "remove", summary: "Undo init" }],
     help: removeHelp,
     flags: { "keep-file": { type: "boolean" } },
+    maxArgs: 0,
     run: (ctx) => remove({ app: ctx.app, keepFile: boolFlag(ctx, "keep-file") }),
   },
   {
@@ -71,6 +72,7 @@ export const commands: Command[] = [
     index: [{ section: "setup", label: "apps", summary: "Apps set up on this machine" }],
     help: appsHelp,
     flags: {},
+    maxArgs: 0,
     run: () => apps(),
   },
 ];

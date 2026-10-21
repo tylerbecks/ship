@@ -3,7 +3,7 @@
 // the store folder, pulled from and pushed to App Store Connect.
 
 import { existsSync } from "node:fs";
-import { type Command, type Context, boolFlag, checkActionFlags, listFlag, stringFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags, checkArgs, flagHint, listFlag, stringFlag } from "../command";
 import { type Project, loadProject, relativeTo } from "../config";
 import { changesJSON, renderChanges } from "../diff";
 import { type Platform, parsePlatform } from "../platform";
@@ -244,7 +244,11 @@ export const commands: Command[] = [
       "exit-code": { type: "boolean" },
     },
     run: async (ctx) => {
-      if (ACTIONS.includes(ctx.args[0] ?? "")) checkActionFlags(ctx, "metadata", ctx.args[0]!, ACTION_FLAGS);
+      if (ACTIONS.includes(ctx.args[0] ?? "")) {
+        checkActionFlags(ctx, "metadata", ctx.args[0]!, ACTION_FLAGS);
+        const given = ctx.args.slice(1);
+        checkArgs(given, 0, `ship metadata ${ctx.args[0]} takes no arguments`, flagHint(given[0], ["locale", "version"], "See `ship metadata --help`."));
+      }
       const { failed } = await metadata(ctx.args[0], options(ctx));
       if (failed) process.exitCode = 1;
     },

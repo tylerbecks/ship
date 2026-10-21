@@ -6,7 +6,7 @@
 // src/commands (listed in src/commands/index.ts).
 
 import pkg from "../package.json";
-import { findCommand, parseFlags, renderIndex } from "./command";
+import { checkArgs, findCommand, parseFlags, renderIndex, splitCommand } from "./command";
 import { commands } from "./commands";
 import { ShipError, ui } from "./ui";
 
@@ -16,10 +16,10 @@ async function main(argv: string[]) {
   // Set before parsing, so even a usage error comes back as JSON.
   ui.json = argv.includes("--json");
   if (argv[0] === "--version" || argv[0] === "-v") return console.log(pkg.version);
-  const first = argv[0] && !argv[0].startsWith("-") ? argv[0] : undefined;
-  if (!first && (argv.includes("--help") || argv.includes("-h"))) return console.log(help());
+  const { name: first, rest } = splitCommand(argv, [...commands.map((command) => command.name), "help"]);
+  if (!first && (rest.includes("--help") || rest.includes("-h"))) return console.log(help());
   if (first === "help") {
-    console.log(findCommand(commands, argv[1])?.help ?? help());
+    console.log(findCommand(commands, rest.find((arg) => !arg.startsWith("-")))?.help ?? help());
     return;
   }
   const name = first ?? "status";
@@ -28,10 +28,14 @@ async function main(argv: string[]) {
     throw new ShipError(`Unknown command "${name}"`, "usage", "See `ship --help`.", undefined, 2);
   }
 
-  const { values, positionals } = parseFlags(first ? argv.slice(1) : argv, command.flags);
+  const { values, positionals } = parseFlags(rest, command.flags);
   ui.json = values.json === true;
   ui.quiet = values.quiet === true;
   if (values.help) return console.log(command.help);
+  if (command.maxArgs !== undefined) {
+    const takes = command.maxArgs === 0 ? "no arguments" : `at most ${command.maxArgs}`;
+    checkArgs(positionals, command.maxArgs, `ship ${name} takes ${takes}`, `See \`ship ${name} --help\`.`);
+  }
   const app = typeof values.app === "string" ? values.app : undefined;
   const implicit = !first;
   try {
