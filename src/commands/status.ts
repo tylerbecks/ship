@@ -1,7 +1,10 @@
+// ship status: recent builds, their commits, TestFlight state, and groups.
+
 import { type BetaGroup, type Build, betaGroups, lookupApp, recentBuilds } from "../asc/api";
 import { type Project, loadApps, loadProject } from "../config";
 import { hasCredentials } from "../credentials";
 import { type Since, buildCommits, describeSince, fetchBuildTags, sinceBuild } from "../git";
+import { type Command, boolFlag, intFlag } from "../command";
 import { ShipError, table, ui } from "../ui";
 
 export const statusHelp = `ship status [--app <name>] [--all] [--limit <n>]
@@ -104,3 +107,16 @@ function printGroups(groups: BetaGroup[]) {
 
 /** READY_FOR_BETA_TESTING → "ready for beta testing". */
 export const friendly = (state?: string) => (state ? state.toLowerCase().replaceAll("_", " ") : "");
+
+export const commands: Command[] = [
+  {
+    name: "status",
+    index: [
+      { section: "daily", label: "", summary: "Same as ship status" },
+      { section: "daily", label: "status", summary: "Recent builds, TestFlight state, groups, public links" },
+    ],
+    help: statusHelp,
+    flags: { all: { type: "boolean" }, limit: { type: "string" } },
+    run: (ctx) => status({ app: ctx.app, all: boolFlag(ctx, "all"), limit: intFlag(ctx, "limit", { min: 1, max: 200 }) ?? 5 }),
+  },
+];

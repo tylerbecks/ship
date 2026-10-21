@@ -1,6 +1,9 @@
+// ship apps and ship remove: the apps set up on this machine.
+
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_FILE, findConfigRoot, forgetApp, loadApps, loadProject, removeProjectConfig } from "../config";
+import { type Command, boolFlag } from "../command";
 import { ShipError, table, ui } from "../ui";
 
 export const appsHelp = `ship apps
@@ -55,3 +58,20 @@ export async function remove(options: { app?: string; keepFile?: boolean }) {
     if (hadFile && !options.keepFile) console.log(`Deleted ${join(root!, CONFIG_FILE)}. Commit the deletion if it was checked in.`);
   });
 }
+
+export const commands: Command[] = [
+  {
+    name: "remove",
+    index: [{ section: "setup", label: "remove", summary: "Undo init" }],
+    help: removeHelp,
+    flags: { "keep-file": { type: "boolean" } },
+    run: (ctx) => remove({ app: ctx.app, keepFile: boolFlag(ctx, "keep-file") }),
+  },
+  {
+    name: "apps",
+    index: [{ section: "setup", label: "apps", summary: "Apps set up on this machine" }],
+    help: appsHelp,
+    flags: {},
+    run: () => apps(),
+  },
+];

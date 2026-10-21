@@ -1,3 +1,5 @@
+// ship init: find the app's project and scheme, and write ship.json.
+
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { lookupApp } from "../asc/api";
@@ -11,6 +13,7 @@ import {
   repoRoot,
   saveProjectConfig,
 } from "../config";
+import { type Command, boolFlag, stringFlag } from "../command";
 import { ShipError, ui } from "../ui";
 import { type XcodeContainer, appSettings, findContainers, listSchemes, packageSettings } from "../xcode";
 
@@ -142,3 +145,13 @@ async function ignoreWorkDir(root: string): Promise<boolean> {
   await Bun.write(join(root, ".gitignore"), `${text}${text && !text.endsWith("\n") ? "\n" : ""}# ship: build products and logs\n.ship/\n`);
   return true;
 }
+
+export const commands: Command[] = [
+  {
+    name: "init",
+    index: [{ section: "setup", label: "init", summary: "Find the app's project and scheme; write ship.json" }],
+    help: initHelp,
+    flags: { project: { type: "string" }, scheme: { type: "string" }, force: { type: "boolean" } },
+    run: (ctx) => init({ project: stringFlag(ctx, "project"), scheme: stringFlag(ctx, "scheme"), force: boolFlag(ctx, "force") }),
+  },
+];

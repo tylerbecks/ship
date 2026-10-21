@@ -1,3 +1,5 @@
+// ship beta and ship distribute: archive, upload, and send a build to TestFlight.
+
 import { join, relative } from "node:path";
 import {
   type Build,
@@ -13,6 +15,7 @@ import { archive, checkInfo, exportIPA, ipaInfo, upload, withKeyFile } from "../
 import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
 import { type Commit, type Tagging, commitSetting, drift, headCommit, tagBuild, tagFor } from "../git";
+import { type Command, boolFlag, stringFlag } from "../command";
 import { ShipError, ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
 import { appId, friendly } from "./status";
@@ -303,3 +306,42 @@ async function localBuild(project: Project): Promise<number | undefined> {
   }
 }
 
+
+export const commands: Command[] = [
+  {
+    name: "beta",
+    index: [{ section: "daily", label: "beta", summary: "Next build number → archive → upload → TestFlight" }],
+    help: betaHelp,
+    flags: {
+      notes: { type: "string" },
+      external: { type: "boolean" },
+      build: { type: "string" },
+      "no-wait": { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      "allow-dirty": { type: "boolean" },
+    },
+    run: (ctx) =>
+      beta({
+        app: ctx.app,
+        notes: stringFlag(ctx, "notes"),
+        external: boolFlag(ctx, "external"),
+        build: stringFlag(ctx, "build"),
+        wait: !boolFlag(ctx, "no-wait"),
+        dryRun: boolFlag(ctx, "dry-run"),
+        allowDirty: boolFlag(ctx, "allow-dirty"),
+      }),
+  },
+  {
+    name: "distribute",
+    index: [{ section: "daily", label: "distribute <n>", summary: "Finish an uploaded build (groups, review)" }],
+    help: distributeHelp,
+    flags: { notes: { type: "string" }, external: { type: "boolean" } },
+    run: (ctx) => {
+      const build = ctx.args[0];
+      if (!build) {
+        throw new ShipError("Which build? ship distribute <build>", "usage", "`ship status` lists the build numbers.", undefined, 2);
+      }
+      return distributeCommand(build, { app: ctx.app, notes: stringFlag(ctx, "notes"), external: boolFlag(ctx, "external") });
+    },
+  },
+];
