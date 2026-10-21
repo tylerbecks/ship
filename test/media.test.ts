@@ -177,6 +177,17 @@ describe("plan", () => {
     expect(planChanges(pruned)).toEqual([{ scope: "en-US/screenshots/APP_IPHONE_67", field: "extra.png", kind: "remove", from: "x", to: null }]);
   });
 
+  test("an upload without a checksum is kept and counted like any other, or goes with --prune", () => {
+    const input = { ...base, local: [{ path: P("01-a.png"), md5: "a" }], remote: [{ id: "1", fileName: "a.png", checksum: "a" }, { id: "n", fileName: "other.png" }] };
+    const kept = planSet(input);
+    expect(setJSON(kept)).toMatchObject({ delete: [], keep: 1, reorder: false });
+    // The reorder PATCH replaces the whole list, so every member of the set is in it.
+    expect(kept.order).toEqual(["1", "n"]);
+    expect(planSet({ ...input, prune: true }).delete).toEqual(["other.png"]);
+    const full = Array.from({ length: 10 }, (_, i) => ({ path: P(`${i}.png`), md5: `l${i}` }));
+    expect(() => planSet({ ...input, local: full })).toThrow(expect.objectContaining({ code: "too-many-media" }));
+  });
+
   test("failed and unfinished uploads are always deleted", () => {
     const plan = planSet({ ...base, local: [{ path: P("01-a.png"), md5: "a" }], remote: [{ id: "f", fileName: "a.png", checksum: "a", broken: true }] });
     expect(setJSON(plan)).toMatchObject({ upload: [P("01-a.png")], delete: ["a.png"], keep: 0 });
@@ -502,6 +513,31 @@ describe("push and pull", () => {
     await expect(syncMedia(p, { appId: "APP" })).rejects.toMatchObject({ code: "media-failed" });
     expect(mock.calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v1/appScreenshots/NEW"]);
     expect(await readLock(p.storeDir)).toEqual(locked);
+  });
+
+  test("a push that stops after a replacement uploads deletes the old upload next time", async () => {
+    const p = await project();
+    const edited = png(1290, 2796, { seed: 4 });
+    const added = png(1290, 2796, { seed: 5 });
+    addFile(p, P("01-home.png"), edited);
+    addFile(p, P("02-new.png"), added);
+    const locked = { [P("01-home.png")]: { md5: "pulled", checksum: "first" } };
+    writeFileSync(join(p.storeDir, "media.lock.json"), JSON.stringify(locked));
+    // The replacement processes; the new file fails, so the push stops before deleting the old upload.
+    mock = fakeAsc({ screenshots: [shot("A", "home.png", "first")], states: [{ state: "COMPLETE" }, { state: "FAILED", errors: [{ code: "X", description: "Bad." }] }] });
+    await expect(syncMedia(p, { appId: "APP" })).rejects.toMatchObject({ code: "media-failed" });
+    expect(mock.calls.some((c) => c.method === "DELETE" && c.path === "/v1/appScreenshots/A")).toBe(false);
+    // The lock still names the old upload, so it isn't orphaned...
+    const lock = await readLock(p.storeDir);
+    expect(lock).toEqual(locked);
+    // ...and the next push matches the replacement by its checksum and deletes the old one.
+    const next = planSet({
+      ...base,
+      lock,
+      local: [{ path: P("01-home.png"), md5: md5(edited) }, { path: P("02-new.png"), md5: md5(added) }],
+      remote: [shot("A", "home.png", "first"), shot("R", "01-home.png", md5(edited))].map((item) => ({ id: item.id, fileName: String(item.attributes.fileName), checksum: String(item.attributes.sourceFileChecksum) })),
+    });
+    expect(setJSON(next)).toMatchObject({ upload: [P("02-new.png")], replace: [], delete: ["home.png"], keep: 0 });
   });
 
   test("files in App Store Connect that aren't in the repo are reported as skipped", async () => {

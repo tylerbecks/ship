@@ -265,8 +265,8 @@ export interface FullPlan extends SetPlan {
   /** Local path → the remote id it matches. */
   matched: Map<string, string>;
   deleteIds: string[];
-  /** Remote id → the local file a replacement upload stands for (for the change's "from"). */
-  replaced: Map<string, RemoteItem>;
+  /** Remote id → the local path whose new upload replaces it. */
+  replaced: Map<string, string>;
   keptIds: string[];
   /** The order push ends with: remote ids, and "local:<path>" for uploads. */
   order: string[];
@@ -313,21 +313,23 @@ export function planSet(input: PlanInput): FullPlan {
   const upload: string[] = [];
   const replace: string[] = [];
   const deleteIds: string[] = [];
-  const replaced = new Map<string, RemoteItem>();
+  const replaced = new Map<string, string>();
   for (const file of local) {
     const entry = lock[file.path];
     // A file the lock knows that changed: its old upload goes, whether or not the new one matches something.
     const old = entry && entry.md5 !== file.md5 ? take((item) => item.checksum === entry.checksum) : undefined;
     if (old) {
       deleteIds.push(old.id);
-      replaced.set(old.id, old);
+      replaced.set(old.id, file.path);
     }
     if (matched.has(file.path)) continue;
     (old ? replace : upload).push(file.path);
   }
 
   for (const item of remote) if (item.broken) deleteIds.push(item.id);
-  const extras = usable.filter((item) => !used.has(item.id));
+  // Everything else nobody matched, including uploads without a checksum (from another tool, say):
+  // they're still in the set, so they count toward the limit and the order.
+  const extras = remote.filter((item) => !item.broken && !used.has(item.id));
   const keptIds: string[] = [];
   for (const item of extras) (prune ? deleteIds : keptIds).push(item.id);
 
@@ -747,8 +749,8 @@ export async function syncMedia(project: Project, options: MediaOptions): Promis
   try {
     for (const plan of comparison.plans) {
       await applyPlan(plan, comparison, options, {
-        uploaded: (path, md5) => {
-          result.uploaded.push(path);
+        uploaded: (path) => result.uploaded.push(path),
+        locked: (path, md5) => {
           lock = updateLock(lock, { uploaded: [{ path, md5 }] });
         },
         // Apple rejected it and it was deleted: forget the upload, and keep what the lock said before.
@@ -772,7 +774,9 @@ export async function syncMedia(project: Project, options: MediaOptions): Promis
 }
 
 interface Progress {
-  uploaded(path: string, md5: string): void;
+  uploaded(path: string): void;
+  /** The lock may now say this path stands for its new upload. */
+  locked(path: string, md5: string): void;
   failed(path: string): void;
   deleted(fileName: string): void;
   reordered(): void;
@@ -786,15 +790,21 @@ async function applyPlan(plan: Planned, comparison: Comparison, options: MediaOp
   ui.step(label);
 
   const byId = new Map(plan.input.remote.map((item) => [item.id, item]));
+  // A replacement's lock entry waits until its old upload is gone. Until then the
+  // lock still names the old one, so a push that stops in between deletes it next time.
+  const waiting = new Map<string, { path: string; md5: string }>();
   const deleteAll = async () => {
     for (const id of plan.deleteIds) {
       await deleteMediaAsset(kind, id);
       const name = byId.get(id)?.fileName ?? id;
       progress.deleted(name);
       ui.note(`- ${name}`);
+      const replacement = waiting.get(id);
+      if (replacement) progress.locked(replacement.path, replacement.md5);
     }
     plan.deleteIds = [];
   };
+  const oldUpload = new Map([...plan.replaced].map(([id, path]) => [path, id]));
 
   // A full set has no room for new files until the old ones are gone.
   const remaining = plan.input.remote.length;
@@ -824,7 +834,10 @@ async function applyPlan(plan: Planned, comparison: Comparison, options: MediaOp
         await deleteMediaAsset(kind, reservation.id).catch(() => undefined);
         throw error;
       }
-      progress.uploaded(file.path, file.md5!);
+      progress.uploaded(file.path);
+      const old = oldUpload.get(file.path);
+      if (old && plan.deleteIds.includes(old)) waiting.set(old, { path: file.path, md5: file.md5! });
+      else progress.locked(file.path, file.md5!);
       ui.note(`+ ${file.name}`);
     }
     if (options.wait !== false) {
