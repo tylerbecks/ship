@@ -52,7 +52,7 @@ App Store Connect has no field for a commit, so the repo keeps the record. `ship
 origin/main has 7 commits since build 202610210930 (6cb9262): git log --oneline 6cb9262..origin/main
 ```
 
-So a build always matches a commit, `ship beta` stops when there are uncommitted changes (untracked files included, since Xcode builds files it finds in synced folders). `--allow-dirty` ships them anyway and skips the tag. It also warns when the commit isn't on the default branch yet, like a PR branch that will be squashed.
+So a build always matches a commit, `ship beta` stops when there are uncommitted changes (untracked files included, since Xcode builds files it finds in synced folders). `--allow-dirty` ships them anyway and skips the tag; it's also what ships a project that isn't in git, or has no commit yet. It also warns when the commit isn't on the default branch yet, like a PR branch that will be squashed.
 
 The commit reaches the build as the `SHIP_COMMIT` build setting (with `-dirty` added for `--allow-dirty`). To show it in the app, add a key such as `ShipCommit` with the value `$(SHIP_COMMIT)` to the Info.plist.
 
@@ -60,7 +60,7 @@ To record a build ship didn't upload: `git tag testflight/<build> <commit> && gi
 
 ## Build numbers and products
 
-For App Playground packages, the build number is written to `Package.swift`'s `bundleVersion`; commit it. For Xcode projects, it's passed as `CURRENT_PROJECT_VERSION` at archive time, so no files change.
+For App Playground packages, the build number is written to `Package.swift`'s `bundleVersion` during the archive; commit it before the next `ship beta`. The tagged commit has the previous number there, and the tag's name is the one that shipped. For Xcode projects, it's passed as `CURRENT_PROJECT_VERSION` at archive time, so no files change.
 
 Build products and logs go in the repo's `.ship/` folder (git-ignored), so worktrees never collide. `SHIP_JOBS=4` limits parallel compile jobs.
 

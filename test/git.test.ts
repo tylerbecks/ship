@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/exec";
+import { checkCommit } from "../src/commands/beta";
 import { buildCommits, describeSince, fetchBuildTags, headCommit, sinceBuild, tagBuild } from "../src/git";
 
 const temp = () => mkdtempSync(join(tmpdir(), "ship-git-"));
@@ -104,6 +105,28 @@ test("fetching keeps local tags origin doesn't have, even with fetch.prune", asy
   await git(app, "tag", "testflight/5", first);
   await fetchBuildTags(app);
   expect(await buildCommits(app)).toEqual(new Map([["5", first]]));
+});
+
+describe("checkCommit", () => {
+  const clean = { sha: "abcdef1234", short: "abcdef1", branch: "main", changes: [], defaultBranch: "origin/main", onDefaultBranch: true };
+  const code = (fn: () => void) => {
+    try {
+      fn();
+    } catch (error) {
+      return (error as { code?: string }).code;
+    }
+  };
+
+  test("passes a clean commit", () => {
+    expect(code(() => checkCommit(clean, false))).toBeUndefined();
+  });
+
+  test("stops uncommitted changes and a missing commit unless --allow-dirty", () => {
+    expect(code(() => checkCommit({ ...clean, changes: [" M a"] }, false))).toBe("uncommitted-changes");
+    expect(code(() => checkCommit(undefined, false))).toBe("no-commit");
+    expect(code(() => checkCommit({ ...clean, changes: [" M a"] }, true))).toBeUndefined();
+    expect(code(() => checkCommit(undefined, true))).toBeUndefined();
+  });
 });
 
 describe("sinceBuild", () => {

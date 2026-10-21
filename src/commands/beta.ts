@@ -38,7 +38,7 @@ Safe to re-run: a build that's already uploaded isn't uploaded again; use
   --build <n>      Use this build number instead of the next one
   --no-wait        Stop after the upload; finish later with \`ship distribute\`
   --dry-run        Show the plan without building or uploading
-  --allow-dirty    Ship uncommitted changes too (the build isn't tagged)`;
+  --allow-dirty    Ship uncommitted changes, or a folder with no commit, untagged`;
 
 export interface BetaOptions {
   app?: string;
@@ -62,9 +62,11 @@ export async function beta(options: BetaOptions) {
   const build = options.build ?? String(highest > 0 ? highest + 1 : ((await localBuild(project)) ?? 0) + 1);
   const existing = await findBuild(id, build);
   const commit = await headCommit(project.root);
-  // A build that's already uploaded may not be HEAD, so only a new upload is tagged.
+  // A build that's already uploaded may not be HEAD, so only a new upload is tagged. An App
+  // Playground's archive still rewrites Package.swift's bundleVersion after this snapshot; that line
+  // is the build number the tag is named for, like CURRENT_PROJECT_VERSION for Xcode projects.
   const tagged = !existing && commit && !commit.changes.length;
-  if (!existing && commit) checkCommit(commit, Boolean(options.allowDirty));
+  if (!existing) checkCommit(commit, Boolean(options.allowDirty));
   const plan = {
     app: project.config.name,
     bundleId: project.config.bundleId,
@@ -122,8 +124,19 @@ export async function beta(options: BetaOptions) {
   ui.result({ plan, tag, ...result }, () => printDistribution(project, build, result));
 }
 
-/** Stops an upload of uncommitted changes, which no commit could describe, unless --allow-dirty. */
-function checkCommit(commit: Commit, allowDirty: boolean) {
+/** Stops an upload that no commit could describe (uncommitted changes, or no commit at all) unless --allow-dirty. */
+export function checkCommit(commit: Commit | undefined, allowDirty: boolean) {
+  if (!commit) {
+    if (!allowDirty) {
+      throw new ShipError(
+        "There's no commit to tag the build with",
+        "no-commit",
+        "Ship from a git repo with at least one commit (git init, then commit), or pass --allow-dirty to ship it untagged.",
+      );
+    }
+    ui.warn("Not in a git repo with a commit; the build won't be tagged");
+    return;
+  }
   if (commit.changes.length) {
     if (!allowDirty) {
       throw new ShipError(
