@@ -8,12 +8,13 @@ import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
 import { type Commit, type Tagging, commitSetting, drift, headCommit, tagBuild, tagFor } from "../git";
 import { type Command, boolFlag, stringFlag } from "../command";
+import { whatToTest } from "../notes";
 import { type AscPlatform, platformInfo } from "../platform";
 import { ShipError, ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
 import { appId, friendly } from "./status";
 
-export const betaHelp = `ship beta [--notes <text>] [--external] [--build <n>] [--no-wait] [--dry-run] [--allow-dirty]
+export const betaHelp = `ship beta [--notes <text>] [--notes-file <path>] [--notes-from-git] [--external] [--build <n>] [--no-wait] [--dry-run] [--allow-dirty]
 
 Ships a TestFlight build in one go:
   1. picks the next build number (one above the highest in App Store Connect)
@@ -30,16 +31,24 @@ pushes the tag, so \`ship status\` and git know what each build contains.
 Safe to re-run: a build that's already uploaded isn't uploaded again; use
 \`ship distribute <build>\` to redo only steps 4 to 6.
 
-  --notes <text>   "What to Test" for testers
-  --external       Also send it to external testers
-  --build <n>      Use this build number instead of the next one
-  --no-wait        Stop after the upload; finish later with \`ship distribute\`
-  --dry-run        Show the plan without building or uploading
-  --allow-dirty    Ship uncommitted changes, or a folder with no commit, untagged`;
+"What to Test" is --notes, then the file, then the commit subjects since the
+previous TestFlight build (--notes-from-git, or "beta": {"notesFromGit": true}
+in ship.json when there's no --notes or --notes-file).
+
+  --notes <text>       "What to Test" for testers
+  --external           Also send it to external testers
+  --build <n>          Use this build number instead of the next one
+  --no-wait            Stop after the upload; finish later with \`ship distribute\`
+  --dry-run            Show the plan without building or uploading
+  --allow-dirty        Ship uncommitted changes, or a folder with no commit, untagged
+  --notes-file <path>  "What to Test" from a file (- reads stdin)
+  --notes-from-git     Add the commit subjects since the previous build`;
 
 export interface BetaOptions {
   app?: string;
   notes?: string;
+  notesFile?: string;
+  notesFromGit?: boolean;
   external?: boolean;
   build?: string;
   wait?: boolean;
@@ -65,13 +74,16 @@ export async function beta(options: BetaOptions) {
   // is the build number the tag is named for, like CURRENT_PROJECT_VERSION for Xcode projects.
   const tagged = !existing && commit && !commit.changes.length;
   if (!existing) checkCommit(commit, Boolean(options.allowDirty));
+  const notes = await whatToTest(project, { ...options, build, at: existing ? "tag" : "head" });
   const plan = {
     app: project.config.name,
     bundleId: project.config.bundleId,
     build,
     upload: !existing,
     external: Boolean(options.external),
-    notes: options.notes ?? null,
+    notes: notes.text,
+    notesSource: notes.source,
+    notesFrom: notes.from,
     commit: commit?.sha ?? null,
     branch: commit?.branch ?? null,
     tag: tagged ? tagFor(build) : null,
@@ -84,6 +96,7 @@ export async function beta(options: BetaOptions) {
       console.log(`Would ${existing ? "distribute" : "archive, upload, and distribute"} ${project.config.name} build ${build}.`);
       console.log(`Internal groups: yes. External groups and Beta App Review: ${options.external ? "yes" : "no"}.`);
       if (plan.tag) console.log(`Would tag ${commit!.short} as ${plan.tag}.`);
+      if (plan.notes) console.log(`What to Test:\n${indent(plan.notes)}`);
     });
     return;
   }
@@ -131,9 +144,11 @@ export async function beta(options: BetaOptions) {
     return;
   }
 
-  const result = await distribute(project, id, build, options);
+  const result = await distribute(project, id, build, { ...options, notes: notes.text ?? undefined });
   ui.result({ plan, tag, ...result }, () => printDistribution(project, build, result));
 }
+
+const indent = (text: string) => text.replace(/^/gm, "  ");
 
 /** Files the archive itself rewrites: an App Playground's Package.swift gets the build number. */
 async function rewrittenPaths(project: Project): Promise<string[]> {
@@ -177,17 +192,26 @@ async function tagCommit(project: Project, build: string, commit: Commit): Promi
   return tag;
 }
 
-export const distributeHelp = `ship distribute <build> [--notes <text>] [--external]
+export const distributeHelp = `ship distribute <build> [--notes <text>] [--notes-file <path>] [--notes-from-git] [--external]
 
 Finishes a build that's already uploaded: waits for processing, answers
 export compliance, sets "What to Test", adds it to the internal groups, and
-with --external, the external groups plus Beta App Review.`;
+with --external, the external groups plus Beta App Review.
+
+  --notes <text>       "What to Test" for testers
+  --notes-file <path>  "What to Test" from a file (- reads stdin)
+  --notes-from-git     Add the commit subjects since the previous build, up to
+                       the build's testflight/<build> tag
+  --external           Also send it to external testers`;
 
 export async function distributeCommand(build: string, options: Omit<BetaOptions, "build" | "dryRun">) {
   const project = await loadProject({ app: options.app });
   const id = await appId(project);
-  const result = await distribute(project, id, build, options);
-  ui.result({ buildNumber: build, ...result }, () => printDistribution(project, build, result));
+  const notes = await whatToTest(project, { ...options, build, at: "tag" });
+  const result = await distribute(project, id, build, { ...options, notes: notes.text ?? undefined });
+  ui.result({ buildNumber: build, ...result, whatToTest: notes.text, notesSource: notes.source, notesFrom: notes.from }, () =>
+    printDistribution(project, build, result),
+  );
 }
 
 interface Distribution {
@@ -312,6 +336,8 @@ export const commands: Command[] = [
     help: betaHelp,
     flags: {
       notes: { type: "string" },
+      "notes-file": { type: "string" },
+      "notes-from-git": { type: "boolean" },
       external: { type: "boolean" },
       build: { type: "string" },
       "no-wait": { type: "boolean" },
@@ -322,6 +348,8 @@ export const commands: Command[] = [
       beta({
         app: ctx.app,
         notes: stringFlag(ctx, "notes"),
+        notesFile: stringFlag(ctx, "notes-file"),
+        notesFromGit: boolFlag(ctx, "notes-from-git"),
         external: boolFlag(ctx, "external"),
         build: optionalBuild(stringFlag(ctx, "build")),
         wait: !boolFlag(ctx, "no-wait"),
@@ -333,13 +361,19 @@ export const commands: Command[] = [
     name: "distribute",
     index: [{ section: "daily", label: "distribute <n>", summary: "Finish an uploaded build (groups, review)" }],
     help: distributeHelp,
-    flags: { notes: { type: "string" }, external: { type: "boolean" } },
+    flags: { notes: { type: "string" }, "notes-file": { type: "string" }, "notes-from-git": { type: "boolean" }, external: { type: "boolean" } },
     run: (ctx) => {
       const build = ctx.args[0];
       if (!build) {
         throw new ShipError("Which build? ship distribute <build>", "usage", "`ship status` lists the build numbers.", undefined, 2);
       }
-      return distributeCommand(checkBuildNumber(build), { app: ctx.app, notes: stringFlag(ctx, "notes"), external: boolFlag(ctx, "external") });
+      return distributeCommand(checkBuildNumber(build), {
+        app: ctx.app,
+        notes: stringFlag(ctx, "notes"),
+        notesFile: stringFlag(ctx, "notes-file"),
+        notesFromGit: boolFlag(ctx, "notes-from-git"),
+        external: boolFlag(ctx, "external"),
+      });
     },
   },
 ];
