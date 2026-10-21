@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { archiveInfoPlist, findPackage, plist, xmlEscape } from "../src/build";
-import { choosePlatform } from "../src/commands/init";
+import { choosePlatform, mergeConfig } from "../src/commands/init";
 import { PLATFORMS, checkCatalyst, detectPlatform, fromAscPlatform, parsePlatform, platformInfo, supportedPlatforms } from "../src/platform";
 import { parseAppSettings } from "../src/xcode";
 import { temp } from "./helpers";
@@ -98,5 +98,45 @@ describe("packages", () => {
     const text = plist({ teamID: "A&B", uploadSymbols: true });
     expect(text).toContain("<string>A&amp;B</string>");
     expect(text).toContain("<key>uploadSymbols</key>\n\t<true/>");
+  });
+});
+
+describe("init --force", () => {
+  const detected = { name: "App", kind: "xcodeproj" as const, path: "App.xcodeproj", scheme: "App", bundleId: "com.example.app", teamId: undefined, platform: "ios" as const };
+
+  test("keeps what init doesn't detect: groups, store, beta, and the app id without a lookup", () => {
+    const previous = {
+      name: "Old",
+      kind: "xcodeproj" as const,
+      path: "Old.xcodeproj",
+      scheme: "Old",
+      bundleId: "com.example.app",
+      teamId: "TEAM",
+      ascAppId: "123",
+      groups: { external: ["Friends"] },
+      store: "fastlane/appstore",
+      beta: { notesFromGit: true },
+    };
+    expect(mergeConfig(previous, detected)).toEqual({
+      name: "App",
+      kind: "xcodeproj",
+      path: "App.xcodeproj",
+      scheme: "App",
+      bundleId: "com.example.app",
+      teamId: "TEAM",
+      ascAppId: "123",
+      groups: { external: ["Friends"] },
+      store: "fastlane/appstore",
+      beta: { notesFromGit: true },
+      platform: "ios",
+    });
+    // A lookup's app id wins.
+    expect(mergeConfig(previous, { ...detected, ascAppId: "456" }).ascAppId).toBe("456");
+  });
+
+  test("drops the app id when the bundle id changed, and starts fresh without a ship.json", () => {
+    expect(mergeConfig({ bundleId: "com.example.old", ascAppId: "123", store: "store" }, detected)).toEqual({ ...detected, teamId: undefined, store: "store" });
+    expect(mergeConfig({ bundleId: "com.example.old", ascAppId: "123" }, detected).ascAppId).toBeUndefined();
+    expect(mergeConfig(undefined, detected)).toEqual({ name: "App", kind: "xcodeproj", path: "App.xcodeproj", scheme: "App", bundleId: "com.example.app", platform: "ios" });
   });
 });

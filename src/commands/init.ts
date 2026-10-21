@@ -30,7 +30,8 @@ When there's more than one project or scheme, it says which and how to pick.
   --project <path>  The .xcodeproj, .xcworkspace, or .swiftpm to use
   --scheme <name>   The scheme that builds the app
   --platform <name> ios, macos, tvos, or visionos (detected when left out)
-  --force           Replace an existing ship.json`;
+  --force           Detect everything again in an existing ship.json,
+                    keeping groups, store, and beta`;
 
 export async function init(options: { project?: string; scheme?: string; platform?: string; force?: boolean }) {
   const requested = options.platform !== undefined ? parsePlatform(options.platform) : undefined;
@@ -68,7 +69,7 @@ export async function init(options: { project?: string; scheme?: string; platfor
     throw new ShipError(`The scheme "${scheme}" has no bundle identifier`, "no-bundle-id", "Set one in Xcode (Signing & Capabilities), then run `ship init` again.");
   }
 
-  const config: ProjectConfig = {
+  const detected: ProjectConfig = {
     name: settings.productName,
     kind: container.kind,
     path: relativeTo(root, container.path),
@@ -84,13 +85,14 @@ export async function init(options: { project?: string; scheme?: string; platfor
     ui.step("Finding the app in App Store Connect");
     const app = await lookupApp(bundleId);
     if (app) {
-      config.ascAppId = app.id;
+      detected.ascAppId = app.id;
       ui.ok(`App Store Connect: ${app.name} (${app.id})`);
     } else {
       ui.warn(`No App Store Connect app uses ${bundleId} yet. Create it, then run \`ship init --force\`.`);
     }
   }
 
+  const config = mergeConfig(await previousConfig(root), detected);
   await saveProjectConfig(root, config);
   const registered = await rememberApp({ name: config.name, bundleId, root });
   if (registered !== realpathSync(root)) ui.note(`This is a worktree; ship knows the app by its main checkout, ${registered}`);
@@ -101,6 +103,30 @@ export async function init(options: { project?: string; scheme?: string; platfor
     console.log(`Wrote ${CONFIG_FILE}. Commit it, and every clone and worktree is set up too.`);
     if (ignored) console.log("Added .ship/ (build products and logs) to .gitignore.");
   });
+}
+
+/** The ship.json `init --force` replaces, or undefined when there's none (or it isn't a JSON object). */
+async function previousConfig(root: string): Promise<Partial<ProjectConfig> | undefined> {
+  const file = Bun.file(join(root, CONFIG_FILE));
+  if (!(await file.exists())) return undefined;
+  const json: unknown = await file.json().catch(() => undefined);
+  if (typeof json === "object" && json !== null && !Array.isArray(json)) return json as Partial<ProjectConfig>;
+  ui.warn(`${join(root, CONFIG_FILE)} isn't a JSON object; writing a new one`);
+  return undefined;
+}
+
+/**
+ * What `init --force` writes: the detected fields over the ship.json that was
+ * there, so what init doesn't detect (groups, store, beta, and the app id when
+ * there was no lookup) stays. A field init found nothing for keeps the old
+ * value, except the app id when the bundle id changed, since it named the
+ * other app.
+ */
+export function mergeConfig(previous: Partial<ProjectConfig> | undefined, detected: ProjectConfig): ProjectConfig {
+  const merged: Record<string, unknown> = { ...previous };
+  if (previous?.bundleId && previous.bundleId.toLowerCase() !== detected.bundleId.toLowerCase()) delete merged.ascAppId;
+  for (const [key, value] of Object.entries(detected)) if (value !== undefined) merged[key] = value;
+  return merged as unknown as ProjectConfig;
 }
 
 /**
