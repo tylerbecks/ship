@@ -110,3 +110,22 @@ describe("checks", () => {
     expect(passwordProblem("app.json", "review.demoAccountPassword", null)).toBeUndefined();
   });
 });
+
+describe("ship doctor's store check", () => {
+  test("none without a store folder; otherwise the errors of all three validates", async () => {
+    const { checkStore } = await import("../src/commands/doctor");
+    const p = await project();
+    expect(await checkStore(p)).toBeUndefined();
+    mkdirSync(join(p.storeDir, "en-US"), { recursive: true });
+    writeFileSync(join(p.storeDir, "en-US", "name.txt"), "Lift\n");
+    expect(await checkStore(p)).toMatchObject({ name: "appstore/", ok: true, detail: "valid" });
+    writeFileSync(join(p.storeDir, "en-US", "subtitle.txt"), `${"x".repeat(31)}\n`);
+    mkdirSync(join(p.storeDir, "testflight"));
+    writeFileSync(join(p.storeDir, "testflight", "review.json"), JSON.stringify({ demoAccountPassword: "hunter2" }));
+    const failing = await checkStore(p);
+    expect(failing).toMatchObject({ ok: false, detail: "2 errors" });
+    expect(failing?.fix).toBe("See them with `ship metadata validate`, `ship testflight validate`.");
+    writeFileSync(join(p.storeDir, "testflight", "review.json"), "{");
+    expect(await checkStore(p)).toMatchObject({ ok: false });
+  });
+});

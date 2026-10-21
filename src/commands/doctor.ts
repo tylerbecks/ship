@@ -1,18 +1,51 @@
 // ship doctor: check that everything ship needs is ready.
 
+import { existsSync } from "node:fs";
+import { relative } from "node:path";
 import { lookupApp } from "../asc/apps";
 import { type Command } from "../command";
-import { CONFIG_FILE, findConfigRoot, loadProject, loadSettings } from "../config";
+import { CONFIG_FILE, type Project, findConfigRoot, loadProject, loadSettings } from "../config";
 import { hasCredentials, serviceAccountToken } from "../credentials";
 import { run } from "../exec";
 import { hasGenericPassword } from "../keychain";
 import { parseKeychainRef } from "../secrets";
-import { ui } from "../ui";
+import { validateMedia } from "../store/media";
+import { validateStore } from "../store/metadata";
+import { readBetaInfo, testflightDir, validateBetaInfo } from "../store/testflight";
+import { ShipError, ui } from "../ui";
 
 export const doctorHelp = `ship doctor
 
 Checks everything ship needs: Xcode, altool, the API key and the Keychain
-items or 1Password it reads from, and this repo's ship.json.`;
+items or 1Password it reads from, this repo's ship.json, and (offline) the
+store folder, as the three validate commands would.`;
+
+/** The store folder's offline checks (all three validates), when there is one. */
+export async function checkStore(project: Project): Promise<{ name: string; ok: boolean; detail: string; fix: string } | undefined> {
+  if (!existsSync(project.storeDir)) return undefined;
+  const name = `${relative(project.root, project.storeDir) || "."}/`;
+  const beta = testflightDir(project);
+  let results: { command: string; problems: { severity: string }[] }[];
+  try {
+    results = [
+      { command: "metadata", problems: await validateStore(project.storeDir) },
+      { command: "screenshots", problems: (await validateMedia(project.storeDir, { platform: project.platform })).problems },
+      { command: "testflight", problems: existsSync(beta) ? validateBetaInfo(await readBetaInfo(beta)) : [] },
+    ];
+  } catch (error) {
+    // A file too broken to read (like review.json that isn't JSON).
+    const hint = error instanceof ShipError ? error.hint : undefined;
+    return { name, ok: false, detail: error instanceof Error ? error.message : String(error), fix: hint ?? "Fix the file, then run `ship doctor` again." };
+  }
+  const failing = results.filter(({ problems }) => problems.some((problem) => problem.severity === "error"));
+  const errors = results.flatMap(({ problems }) => problems).filter((problem) => problem.severity === "error").length;
+  return {
+    name,
+    ok: errors === 0,
+    detail: errors ? `${errors} error${errors === 1 ? "" : "s"}` : "valid",
+    fix: `See them with ${failing.map(({ command }) => `\`ship ${command} validate\``).join(", ")}.`,
+  };
+}
 
 export async function doctor() {
   const checks: { name: string; ok: boolean; detail: string; fix?: string }[] = [];
@@ -59,6 +92,8 @@ export async function doctor() {
     try {
       const project = await loadProject();
       add(CONFIG_FILE, true, `${project.config.name} (${project.config.bundleId}), scheme ${project.config.scheme}`);
+      const store = await checkStore(project);
+      if (store) add(store.name, store.ok, store.detail, store.fix);
       if (await hasCredentials()) {
         const app = await lookupApp(project.config.bundleId);
         add("App Store Connect app", Boolean(app), app ? `${app.name} (${app.id})` : "not found", "Create it in App Store Connect → Apps → +.");

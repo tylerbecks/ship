@@ -37,7 +37,7 @@ ship auth set --key-id ABC123DEFG \
 
 **Once per repo:** `ship init` at the repo root. It finds the `.xcodeproj`, `.xcworkspace`, or App Playground `.swiftpm` package, the scheme that builds the app, its bundle id, and its platform, and writes `ship.json`. Commit it: every clone and worktree is then set up. When there's more than one choice, it lists them and the flag to pass. `ship remove` undoes it; `ship apps` lists every app set up on this machine, and `--app <name>` targets one from anywhere. Running `ship init` in a git worktree registers the repo's main checkout, so an app is listed once however many worktrees it has.
 
-`ship doctor` checks everything.
+`ship doctor` checks everything, including (offline) the store folder.
 
 ## Secrets
 
