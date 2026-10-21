@@ -98,7 +98,32 @@ Build products and logs go in the repo's `.ship/` folder (git-ignored), so workt
 ## Releasing to the App Store
 
 <!-- feature:release -->
-(Coming: ship release and ship version.)
+Once a build of the version is in TestFlight, three commands take it to the App Store:
+
+```
+ship version bump minor             # 1.4 → 1.5 in the Xcode project; commit it, then ship beta
+ship release submit --push          # push appstore/, create 1.5, attach the newest build, check, submit
+ship release                        # where it is: "1.5 (build 41): waiting for review, submitted 2 hours ago."
+ship release go                     # release it, if it waits for you after approval
+```
+
+**`ship release prepare`** gets the version ready without submitting it: it creates the App Store version (or reuses the one App Store Connect is preparing), attaches the newest processed build of that version (or `--build <n>`), answers export compliance if the build hasn't, and sets how it's released. `--push` first pushes the store folder's text and screenshots (`ship metadata push`, `ship screenshots push`). The version comes from the project (`ship version`) unless you pass `--version`. When App Store Connect is preparing a different number, ship stops and says so; `--rename` renames it instead.
+
+**`ship release submit`** does all of that, then checks what App Review needs: a processed build with export compliance answered, a description, keywords, and support URL in every locale, the app's name and privacy policy URL, iPhone (or Mac, Apple TV, Vision Pro) screenshots, copyright, the App Review contact, and the content rights declaration. Anything missing stops it with the command that fixes it; iPad screenshots and "What's New" only warn. Then it submits, reusing a draft submission or the one App Review rejected. Whatever ship can't see, App Store Connect's own answer lists. `--dry-run` shows every step and check without changing anything.
+
+**Release types.** `--release manual` waits for `ship release go` after approval, `--release auto` releases as soon as it's approved, and `--release 2026-11-03T09:00` schedules it (local time unless the date has a zone; Apple schedules on the hour, so ship rounds up). Defaults can live in `appstore/app.json`:
+
+```json
+{ "release": { "type": "AFTER_APPROVAL", "phased": true } }
+```
+
+**Phased release.** `--phased` releases the update over 7 days to people with automatic updates on (1%, 2%, 5%, 10%, 20%, 50%, 100%); anyone can still download it from the App Store. `--no-phased` releases to everyone at once (until the release starts). Once it's rolling out, `ship release phased pause`, `resume`, and `complete` (everyone, now) control it.
+
+**`ship release cancel`** takes a submission out of review, so you can change it and submit again.
+
+**`ship version`** shows the app's version, and `ship version bump major|minor|patch` or `ship version set 1.5` changes it: `MARKETING_VERSION` in every target of the Xcode project (extensions must match the app, so they're brought in line), or `displayVersion` in an App Playground's `Package.swift`. ship doesn't commit; commit the change before `ship beta`.
+
+Everything has `--json`. `ship release --json` returns `{ version, live, submission, phasedRelease }`; `ship release submit --json` adds `checks` (`{ name, ok, detail, blocking, fix }`), `submission`, `submitted`, and `alreadyInReview`.
 <!-- /feature:release -->
 
 ## TestFlight
