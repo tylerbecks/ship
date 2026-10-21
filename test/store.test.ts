@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { loadProject } from "../src/config";
 import { bytes, chars, isEmail, isHttpUrl, passwordProblem } from "../src/store/check";
 import { ASC_LOCALES, LOCALE_PATTERN, localeDirs, readStoreApp, readText, writeStoreApp, writeText } from "../src/store/files";
-import { pushMedia } from "../src/store/media";
 import { temp } from "./helpers";
 
 const config = { name: "App", kind: "xcodeproj", path: "App.xcodeproj", scheme: "App", bundleId: "com.example.app" };
@@ -88,11 +87,6 @@ describe("app.json", () => {
     await expect(readStoreApp(p)).rejects.toMatchObject({ code: "bad-store-file", details: { file: join(p.storeDir, "app.json") } });
     writeFileSync(join(p.storeDir, "app.json"), "[]");
     await expect(readStoreApp(p)).rejects.toMatchObject({ code: "bad-store-file" });
-  });
-
-  test("the feature stubs fail with a hint until they're built", async () => {
-    const p = await project();
-    await expect(pushMedia(p, { appId: "1" })).rejects.toMatchObject({ code: "not-implemented" });
   });
 });
 
