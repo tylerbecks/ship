@@ -701,7 +701,7 @@ export interface MediaPushResult extends PushResult {
 /** Pushes the store's screenshots and previews (for `ship release`, which needs only the PushResult). */
 export async function pushMedia(
   project: Project,
-  options: { appId: string; version?: string; dryRun?: boolean; prune?: boolean },
+  options: { appId: string; version?: string; dryRun?: boolean; prune?: boolean; platform?: Platform },
 ): Promise<PushResult> {
   const { changes, applied, skipped } = await syncMedia(project, options);
   return { changes, applied, skipped };

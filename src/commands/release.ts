@@ -47,7 +47,7 @@ import { type AppStoreVersion, LIVE_VERSION_STATES, appInfos, appStoreVersions, 
 import { checkBuildNumber } from "../build";
 import { type Command, type Context, boolFlag, stringFlag } from "../command";
 import { type Project, loadProject } from "../config";
-import { type AscPlatform, parsePlatform, platformInfo } from "../platform";
+import { type AscPlatform, fromAscPlatform, parsePlatform, platformInfo } from "../platform";
 import { type PushResult, type StoreApp, readStoreApp } from "../store/files";
 import { pushMedia } from "../store/media";
 import { pushMetadata } from "../store/metadata";
@@ -341,11 +341,16 @@ async function prepareVersion(context: ReleaseContext, versionString: string, pl
   }
 
   const pushed: PrepareResult["pushed"] = { metadata: null, media: null };
-  if (options.push) {
+  if (options.push && dryRun && !version) {
+    // A dry run doesn't create the version, so there's nothing yet to compare the store folder with.
+    ui.warn(`--push: after ${versionString} is created, \`ship metadata diff --version ${versionString}\` shows what would change`);
+  } else if (options.push) {
+    // A dry-run rename hasn't renamed yet: compare with the version under its current name.
+    const target = dryRun && plan.action === "rename" ? plan.version.versionString : versionString;
     ui.step("Pushing appstore/ text");
-    pushed.metadata = await pushMetadata(context.project, { appId: context.appId, version: versionString, dryRun });
+    pushed.metadata = await pushMetadata(context.project, { appId: context.appId, version: target, dryRun, platform: context.platform });
     ui.step("Pushing appstore/ screenshots");
-    pushed.media = await pushMedia(context.project, { appId: context.appId, version: versionString, dryRun });
+    pushed.media = await pushMedia(context.project, { appId: context.appId, version: target, dryRun, platform: fromAscPlatform(context.platform) });
   }
 
   if (needsCompliance) {

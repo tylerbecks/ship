@@ -935,6 +935,15 @@ describe("release flows", () => {
     expect(result).toMatchObject({ renamed: true, releaseType: "SCHEDULED", earliestReleaseDate: "2026-11-03T10:00:00Z", phased: false });
   });
 
+  test("prepare --push --dry-run for a version that doesn't exist yet asks nothing of the store folder", async () => {
+    mkdirSync(join(project.storeDir, "en-US"), { recursive: true });
+    writeFileSync(join(project.storeDir, "en-US", "description.txt"), "An app.\n");
+    mock = mockAsc(asc({ versions: [live], builds: [{ id: "b37", number: "37", version: "1.4" }], submissions: [] }));
+    const result = await prepare(project, { version: "1.4", push: true, dryRun: true, now: NOW });
+    expect(result).toMatchObject({ created: true, pushed: { metadata: null, media: null } });
+    expect(writes(mock.calls)).toEqual([]);
+  });
+
   test("prepare with no build of the version fails before changing anything", async () => {
     mock = mockAsc(asc({ versions: [live], builds: [{ id: "b30", number: "30", version: "1.3" }], submissions: [] }));
     const error = await rejected(prepare(project, { version: "1.4", now: NOW }));
