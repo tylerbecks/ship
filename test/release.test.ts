@@ -627,6 +627,15 @@ describe("preflightChecks", () => {
     expect(names).toEqual(["localizations", "name", "privacyPolicyUrl"]);
   });
 
+  test("an iPad-only app passes with 13-inch iPad screenshots alone", () => {
+    const checks = preflightChecks({ ...ready, screenshots: ["APP_IPAD_PRO_3GEN_129"] });
+    expect(blockingFailures(checks)).toEqual([]);
+    expect(checks.find((c) => c.name === "screenshots")?.detail).toContain("fine for an iPad-only app");
+    // Neither iPhone nor 13-inch iPad screenshots still stops it.
+    const none = preflightChecks({ ...ready, screenshots: ["APP_IPAD_PRO_129_LEGACY_NOT_A_TYPE"] }).find((c) => c.name === "screenshots");
+    expect(none).toMatchObject({ ok: false, blocking: true, detail: 'No 6.9" or 6.5" iPhone or 13" iPad screenshots in en-US' });
+  });
+
   test("macOS needs Mac screenshots, and no iPad check", () => {
     const checks = preflightChecks({ ...ready, platform: "MAC_OS", screenshots: ["APP_IPHONE_67"] });
     expect(blockingFailures(checks).map((c) => c.name)).toEqual(["screenshots"]);

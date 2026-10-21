@@ -537,6 +537,9 @@ const REQUIRED_SCREENSHOTS: Record<AscPlatform, { name: string; types: string[] 
   VISION_OS: { name: "Apple Vision Pro", types: ["APP_APPLE_VISION_PRO"] },
 };
 
+/** The 13" iPad screenshot types; one of them covers every iPad size. */
+const IPAD_SCREENSHOTS = ["APP_IPAD_PRO_3GEN_129", "APP_IPAD_PRO_129"];
+
 /** Everything ship can check before App Review sees the version. Apple's own check (a 409 on submit) catches the rest. */
 export function preflightChecks(data: PreflightData): Check[] {
   const checks: Check[] = [];
@@ -584,14 +587,21 @@ export function preflightChecks(data: PreflightData): Check[] {
 
   const required = REQUIRED_SCREENSHOTS[data.platform];
   const hasRequired = required.types.some((type) => data.screenshots.includes(type));
+  const ipad = IPAD_SCREENSHOTS.some((type) => data.screenshots.includes(type));
+  // An iPad-only app is an iOS app without iPhone screenshots. ship can't tell which devices the
+  // app runs on, so 13" iPad screenshots alone pass; Apple's own check stops an iPhone app missing them.
+  const ipadOnly = data.platform === "IOS" && !hasRequired && ipad;
   add(
     "screenshots",
-    hasRequired,
-    hasRequired ? `${required.name} screenshots in ${data.primaryLocale}` : `No ${required.name} screenshots in ${data.primaryLocale}`,
+    hasRequired || ipadOnly,
+    hasRequired
+      ? `${required.name} screenshots in ${data.primaryLocale}`
+      : ipadOnly
+        ? `13" iPad screenshots in ${data.primaryLocale}, and no iPhone ones (fine for an iPad-only app)`
+        : `No ${required.name}${data.platform === "IOS" ? ' or 13" iPad' : ""} screenshots in ${data.primaryLocale}`,
     "Add them under appstore/<locale>/screenshots/ and run `ship screenshots push`.",
   );
   if (data.platform === "IOS") {
-    const ipad = ["APP_IPAD_PRO_3GEN_129", "APP_IPAD_PRO_129"].some((type) => data.screenshots.includes(type));
     add(
       "ipadScreenshots",
       ipad,
