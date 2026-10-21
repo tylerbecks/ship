@@ -69,6 +69,7 @@ import type { Problem } from "./check";
 import { type PushResult, type StoreApp, localeDirs, orderStoreApp, readText, writeStoreApp, writeText } from "./files";
 import {
   AGE_RATING_DEPRECATED,
+  AGE_RATING_KEYS,
   LOCALE_FIELDS,
   type LocaleTarget,
   PLAINTEXT_SECRET,
@@ -770,8 +771,11 @@ export function planPull(remote: RemoteMetadata, existing: StoreApp | undefined,
   set("contentRights", remote.app.contentRights as StoreApp["contentRights"]);
   if (remote.version) set("copyright", remote.version.copyright);
   if (remote.ageRating) {
+    // Only attributes ship knows, so a question Apple adds later doesn't make validate fail on a fresh pull.
     const rating = Object.fromEntries(
-      Object.entries(remote.ageRating.attributes).filter(([key, value]) => value !== null && value !== undefined && !AGE_RATING_DEPRECATED.includes(key)),
+      Object.entries(remote.ageRating.attributes).filter(
+        ([key, value]) => value !== null && value !== undefined && AGE_RATING_KEYS.includes(key) && !AGE_RATING_DEPRECATED.includes(key),
+      ),
     ) as Record<string, string | boolean>;
     set("ageRating", Object.keys(rating).length ? rating : undefined);
   }

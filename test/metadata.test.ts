@@ -54,7 +54,7 @@ function remote(overrides: Partial<RemoteMetadata> = {}): RemoteMetadata {
     firstVersion: false,
     appInfo: { id: "info2", state: "PREPARE_FOR_SUBMISSION" },
     categories: { primary: "HEALTH_AND_FITNESS", primarySubcategories: [], secondary: "SPORTS", secondarySubcategories: [] },
-    ageRating: { id: "age2", attributes: { violenceCartoonOrFantasy: "NONE", gambling: false, kidsAgeBand: null, ageRatingOverride: "NONE" } },
+    ageRating: { id: "age2", attributes: { violenceCartoonOrFantasy: "NONE", gambling: false, kidsAgeBand: null, ageRatingOverride: "NONE", someFutureQuestion: true } },
     appInfoLocalizations: [
       { id: "il-en", locale: "en-US", attributes: { locale: "en-US", name: "Lift", subtitle: "Track every set", privacyPolicyUrl: "https://lift.example.com/privacy", privacyChoicesUrl: null } },
       { id: "il-de", locale: "de-DE", attributes: { locale: "de-DE", name: "Lift", subtitle: "Jeder Satz zählt", privacyPolicyUrl: null, privacyChoicesUrl: null } },
