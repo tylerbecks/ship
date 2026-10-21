@@ -421,7 +421,7 @@ describe("pickBuildsToExpire", () => {
     // Newest first. A version being prepared doesn't protect its build.
     expect(pick.expire.map((b) => b.number)).toEqual(["48", "46", "45"]);
     expect(pick.skipped).toEqual([
-      { number: "50", reason: "one of the newest valid build (--keep)" },
+      { number: "50", reason: "the newest valid build (--keep 1)" },
       { number: "49", reason: "still processing" },
       { number: "47", reason: "in App Store version 1.0 (ready for distribution)" },
     ]);
@@ -435,6 +435,10 @@ describe("pickBuildsToExpire", () => {
     const expired = (keep?: number) => pickBuildsToExpire(builds, { olderThan: DAY_MS, keep, now: NOW }).expire.map((b) => b.number);
     expect(expired()).toEqual(["4", "2", "1"]);
     expect(expired(2)).toEqual(["4", "1"]);
+    expect(pickBuildsToExpire(builds, { olderThan: DAY_MS, keep: 2, now: NOW }).skipped[0]).toEqual({
+      number: "3",
+      reason: "one of the newest 2 valid builds (--keep 2)",
+    });
     expect(expired(0)).toEqual(["4", "3", "2", "1"]);
     expect(pickBuildsToExpire(builds, { olderThan: 100 * DAY_MS, now: NOW })).toEqual({ expire: [], skipped: [] });
   });

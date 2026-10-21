@@ -158,7 +158,7 @@ function printDetail(build: BuildDetail & { commit: string | null }) {
   console.log(table(rows.filter(([, value]) => value).map(([key, value]) => [`  ${key}`, value])));
   const locales = Object.entries(build.whatToTest).filter(([, text]) => text.trim());
   for (const [locale, text] of locales) console.log(`\nWhat to Test (${locale}):\n${text.replace(/^/gm, "  ")}`);
-  if (!locales.length) console.log("\nNo What to Test yet. `ship distribute <n> --notes …` sets it.");
+  if (!locales.length) console.log(`\nNo What to Test yet. \`ship distribute ${build.number} --notes "…"\` sets it.`);
 }
 
 // MARK: Expiring
@@ -253,7 +253,7 @@ export function pickBuildsToExpire(builds: Build[], options: ExpireOptions & { n
     if (build.expired || !(Date.parse(build.uploadedDate) < cutoff)) continue;
     const reason =
       skip(build) ??
-      (kept.has(build) ? `one of the newest ${keep === 1 ? "valid build" : `${keep} valid builds`} (--keep)` : undefined) ??
+      (kept.has(build) ? (keep === 1 ? "the newest valid build (--keep 1)" : `one of the newest ${keep} valid builds (--keep ${keep})`) : undefined) ??
       (inUse(build) ? `in App Store version ${build.appStoreVersion!.versionString} (${friendly(build.appStoreVersion!.state)})` : undefined);
     if (reason) skipped.push({ number: build.number, reason });
     else expire.push(build);
