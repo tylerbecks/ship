@@ -9,15 +9,12 @@
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Project } from "./config";
-import { run } from "./exec";
-import { buildCommits, headCommit, tagFor } from "./git";
+import { buildCommits, git, headCommit, tagFor } from "./git";
+import { chars } from "./store/check";
 import { ShipError, ui } from "./ui";
 
 /** BetaBuildLocalization.whatsNew's limit, in characters. */
 export const WHATS_NEW_LIMIT = 4000;
-
-/** Git without a credential prompt, like git.ts. */
-const git = (root: string, args: string[]) => run(["git", ...args], { cwd: root, env: { GIT_TERMINAL_PROMPT: "0" } });
 
 // MARK: Commits since the previous build
 
@@ -100,9 +97,6 @@ export function cleanSubject(subject: string): { type?: string; text: string } {
 
 /** Subjects that say nothing to testers on their own: merges, and fixups waiting to be squashed. */
 const NOISE = /^(?:Merge |(?:fixup|squash|amend)! )/;
-
-/** Code points, as Apple counts whatsNew's 4,000. */
-const chars = (text: string) => [...text].length;
 
 /**
  * "What to Test" from commit subjects (newest first): one "• text" line each,

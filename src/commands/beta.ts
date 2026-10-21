@@ -36,13 +36,13 @@ previous TestFlight build (--notes-from-git, or "beta": {"notesFromGit": true}
 in ship.json when there's no --notes or --notes-file).
 
   --notes <text>       "What to Test" for testers
+  --notes-file <path>  "What to Test" from a file (- reads stdin)
+  --notes-from-git     Add the commit subjects since the previous build
   --external           Also send it to external testers
   --build <n>          Use this build number instead of the next one
   --no-wait            Stop after the upload; finish later with \`ship distribute\`
   --dry-run            Show the plan without building or uploading
-  --allow-dirty        Ship uncommitted changes, or a folder with no commit, untagged
-  --notes-file <path>  "What to Test" from a file (- reads stdin)
-  --notes-from-git     Add the commit subjects since the previous build`;
+  --allow-dirty        Ship uncommitted changes, or a folder with no commit, untagged`;
 
 export interface BetaOptions {
   app?: string;

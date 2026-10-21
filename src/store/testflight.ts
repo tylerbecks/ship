@@ -9,8 +9,9 @@
 //
 // A missing file isn't managed; an empty one clears the field. All of it can
 // change any time, unlike the App Store page. The demo account password is
-// a reference (keychain:, op://, env:, file:), never the password: null
-// leaves App Store Connect's alone (pull writes null), and "" clears it.
+// a reference (keychain:, op://, env:, file:), never the password. As in
+// app.json, leaving it out leaves App Store Connect's alone (pull leaves it
+// out), and "" or null clears it.
 
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -30,7 +31,7 @@ import { type Change, MASK, diffRecord, same } from "../diff";
 import { isSecretReference, resolveSecret } from "../secrets";
 import { ShipError, ui } from "../ui";
 import { type Problem, chars, isEmail, isHttpUrl, passwordProblem } from "./check";
-import { ASC_LOCALES, LOCALE_PATTERN, type PushResult, type ReviewDetails, localeDirs, readText, writeText } from "./files";
+import { ASC_LOCALES, LOCALE_PATTERN, type PushResult, type ReviewDetails, isObject, localeDirs, readText, writeText } from "./files";
 
 /** The testflight folder inside the store folder. */
 export const testflightDir = (project: Project) => join(project.storeDir, "testflight");
@@ -82,8 +83,6 @@ export interface BetaInfoFiles {
   /** Files in locale folders ship doesn't read, like "en-US/whats-new.txt". */
   unknownFiles: string[];
 }
-
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** review.json's text as an object, or a bad-store-file error naming the file. */
 export function parseReviewJSON(text: string, file: string): Record<string, unknown> {
@@ -148,7 +147,7 @@ const orNull = (value: unknown) => (typeof value === "string" && value.trim() !=
 /**
  * The files for what App Store Connect has, by path in the testflight
  * folder. The password is never written: review.json keeps `passwordRef`
- * (the reference already there), or null. tvos-privacy-policy.txt is written
+ * (the reference already there), or leaves it out. tvos-privacy-policy.txt is written
  * only for tvOS apps or when it has text.
  */
 export function filesFromRemote(remote: RemoteBetaInfo, options: { passwordRef?: string | null; tvos?: boolean } = {}): Map<string, string> {
@@ -161,7 +160,7 @@ export function filesFromRemote(remote: RemoteBetaInfo, options: { passwordRef?:
     contactPhone: orNull(a.contactPhone),
     demoAccountRequired: Boolean(a.demoAccountRequired),
     demoAccountName: orNull(a.demoAccountName),
-    demoAccountPassword: options.passwordRef ?? null,
+    ...(options.passwordRef ? { demoAccountPassword: options.passwordRef } : {}),
   };
   files.set(REVIEW_FILE, `${JSON.stringify(review, null, 2)}\n`);
   files.set(NOTES_FILE, text(a.notes));
@@ -288,12 +287,12 @@ export function planBetaInfo(local: BetaInfoFiles, remote: RemoteBetaInfo, optio
   for (const change of reviewChanges) (plan.review as Record<string, unknown>)[change.field] = change.to ?? null;
   plan.changes.push(...reviewChanges);
 
-  // Unlike other fields, a null password isn't managed: pull writes null because it never writes
-  // the password, and pushing that mustn't clear App Store Connect's. "" clears it.
-  if (typeof demoAccountPassword === "string") {
+  // A missing password isn't managed: pull leaves it out because it never writes the
+  // password, and pushing that mustn't clear App Store Connect's. "" or null clears it.
+  if (demoAccountPassword === null || typeof demoAccountPassword === "string") {
     const shown = "demoAccountPassword" in remote.review.attributes;
     const remotePassword = remote.review.attributes.demoAccountPassword;
-    const clear = demoAccountPassword === "";
+    const clear = !demoAccountPassword;
     if (!shown) {
       // Apple didn't say, so it can't be compared: send it with the other changes.
       plan.passwordHidden = true;
@@ -365,10 +364,14 @@ export function validateBetaInfo(info: BetaInfoFiles): BetaProblem[] {
       if (!review.demoAccountName && review.demoAccountName !== undefined) {
         error(reviewFile, "demoAccountRequired is true, so Beta App Review needs demoAccountName", "demoAccountName");
       }
-      if (password === "") {
+      if (password === "" || review.demoAccountPassword === null) {
         error(reviewFile, "demoAccountRequired is true, so Beta App Review needs demoAccountPassword (a reference like keychain:ship/<name>)", "demoAccountPassword");
-      } else if (review.demoAccountPassword === null) {
-        warning(reviewFile, "demoAccountPassword is null, so ship leaves App Store Connect's password as it is. Point it at a reference to manage it.", "demoAccountPassword");
+      } else if (review.demoAccountPassword === undefined) {
+        warning(
+          reviewFile,
+          "demoAccountRequired is true but demoAccountPassword isn't here; App Store Connect keeps the one it has. To manage it, save it with `ship secret set keychain:ship/<name> --stdin` and write that reference here",
+          "demoAccountPassword",
+        );
       }
     }
   }

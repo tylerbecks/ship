@@ -874,8 +874,9 @@ export const commands: Command[] = [
   {
     name: "release",
     index: [
-      { section: "appstore", label: "release submit", summary: "Submit a version for App Store review" },
       { section: "appstore", label: "release", summary: "Review and release status" },
+      { section: "appstore", label: "release prepare", summary: "Create the version and attach a build" },
+      { section: "appstore", label: "release submit", summary: "Submit a version for App Store review" },
     ],
     help: releaseHelp,
     flags: {

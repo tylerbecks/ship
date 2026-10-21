@@ -16,7 +16,7 @@ Every day:
   ship status             Recent builds, TestFlight state, groups, public links
   ship beta               Next build number → archive → upload → TestFlight
   ship distribute <n>     Finish an uploaded build (groups, review)
-  ship testers [add|remove]  List, invite, or remove testers
+  ship testers            List, invite, or remove testers
   ship archive            Archive and export without uploading
 
 Flags for every command:

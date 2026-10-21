@@ -4,7 +4,7 @@
 // pure: the reading happens in store/metadata.ts.
 
 import { type Problem, bytes, chars, isEmail, isHttpUrl, passwordProblem } from "./check";
-import { ASC_LOCALES } from "./files";
+import { APP_KEYS, ASC_LOCALES, CATEGORY_KEYS, RELEASE_KEYS, REVIEW_KEYS, isObject } from "./files";
 
 // MARK: Files
 
@@ -129,11 +129,7 @@ export const AGE_RATING_DEPRECATED = ["ageRatingOverride"];
 export const CONTENT_RIGHTS = ["DOES_NOT_USE_THIRD_PARTY_CONTENT", "USES_THIRD_PARTY_CONTENT"];
 export const RELEASE_TYPES = ["MANUAL", "AFTER_APPROVAL", "SCHEDULED"];
 
-const APP_KEYS = ["categories", "contentRights", "copyright", "ageRating", "review", "release"];
-const CATEGORY_KEYS = ["primary", "primarySubcategories", "secondary", "secondarySubcategories"];
-const REVIEW_TEXT_KEYS = ["contactFirstName", "contactLastName", "contactEmail", "contactPhone", "demoAccountName", "demoAccountPassword"];
-const REVIEW_KEYS = [...REVIEW_TEXT_KEYS.slice(0, 4), "demoAccountRequired", ...REVIEW_TEXT_KEYS.slice(4)];
-const RELEASE_KEYS = ["type", "phased"];
+const REVIEW_TEXT_KEYS = REVIEW_KEYS.filter((key) => key !== "demoAccountRequired");
 
 // MARK: Validating
 
@@ -157,7 +153,6 @@ export interface StoreSnapshot {
 const problem = (file: string, message: string, severity: Problem["severity"] = "error", field?: string): Problem =>
   field ? { file, field, message, severity } : { file, message, severity };
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Edit distance, for "did you mean". */
 export function distance(a: string, b: string): number {

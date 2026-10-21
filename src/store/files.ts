@@ -104,10 +104,11 @@ export interface StoreApp {
   };
 }
 
-const APP_KEYS = ["categories", "contentRights", "copyright", "ageRating", "review", "release"];
-const CATEGORY_KEYS = ["primary", "primarySubcategories", "secondary", "secondarySubcategories"];
-const REVIEW_KEYS = ["contactFirstName", "contactLastName", "contactEmail", "contactPhone", "demoAccountRequired", "demoAccountName", "demoAccountPassword"];
-const RELEASE_KEYS = ["type", "phased"];
+/** app.json's keys, in the order it's written (validate also uses them to catch typos). */
+export const APP_KEYS = ["categories", "contentRights", "copyright", "ageRating", "review", "release"];
+export const CATEGORY_KEYS = ["primary", "primarySubcategories", "secondary", "secondarySubcategories"];
+export const REVIEW_KEYS = ["contactFirstName", "contactLastName", "contactEmail", "contactPhone", "demoAccountRequired", "demoAccountName", "demoAccountPassword"];
+export const RELEASE_KEYS = ["type", "phased"];
 
 /** An object's keys in `order` first, then the rest alphabetically. */
 function ordered(value: Record<string, unknown>, order: string[] = []): Record<string, unknown> {
@@ -117,7 +118,7 @@ function ordered(value: Record<string, unknown>, order: string[] = []): Record<s
   return Object.fromEntries([...order.filter((key) => key in value), ...rest].map((key) => [key, value[key]]));
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** app.json in a stable key order, so a pull never reorders it. */
 export function orderStoreApp(app: StoreApp): StoreApp {

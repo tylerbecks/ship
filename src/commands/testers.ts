@@ -192,7 +192,7 @@ function printTesters(group: string, list: Tester[]) {
 export const commands: Command[] = [
   {
     name: "testers",
-    index: [{ section: "daily", label: "testers [add|remove]", summary: "List, invite, or remove testers" }],
+    index: [{ section: "daily", label: "testers", summary: "List, invite, or remove testers" }],
     help: testersHelp,
     flags: { group: { type: "string" }, everywhere: { type: "boolean" } },
     run: (ctx) =>

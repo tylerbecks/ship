@@ -23,7 +23,7 @@ export interface Commit {
 }
 
 /** Git without a credential prompt: a fetch or push that needs one fails instead of hanging. */
-const git = (root: string, args: string[]) => run(["git", ...args], { cwd: root, env: { GIT_TERMINAL_PROMPT: "0" } });
+export const git = (root: string, args: string[]) => run(["git", ...args], { cwd: root, env: { GIT_TERMINAL_PROMPT: "0" } });
 
 export const tagFor = (build: string) => `testflight/${build}`;
 

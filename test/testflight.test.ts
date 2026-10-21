@@ -409,7 +409,6 @@ describe("testflight test information", () => {
       contactPhone: "+1 555 0100",
       demoAccountRequired: true,
       demoAccountName: "review@example.com",
-      demoAccountPassword: null,
     });
     expect([...files.values()].join("")).not.toContain("hunter2");
     expect(JSON.parse(filesFromRemote(remoteInfo(), { passwordRef: "keychain:ship/demo" }).get("review.json")!).demoAccountPassword).toBe("keychain:ship/demo");
@@ -431,8 +430,8 @@ describe("testflight test information", () => {
     const local = await readBetaInfo(dir);
     expect(local.review?.contactEmail).toBe("tyler@example.com");
     expect(local.notes).toBe("Sign in with the demo account.");
-    // The password is null in the file, which leaves App Store Connect's alone.
-    expect(local.review?.demoAccountPassword).toBeNull();
+    // The password isn't in the file, which leaves App Store Connect's alone.
+    expect(local.review && "demoAccountPassword" in local.review).toBe(false);
     expect(planBetaInfo(local, remote)).toMatchObject({ changes: [], update: [], create: {}, onlyRemote: [], review: {} });
     expect(planBetaInfo(local, remote).password).toBeUndefined();
 
@@ -503,11 +502,13 @@ describe("testflight test information", () => {
     const unset = remoteInfo({ review: { demoAccountPassword: null } });
     expect(planBetaInfo(local, unset).changes[0]).toMatchObject({ field: "demoAccountPassword", kind: "add", secret: true });
 
-    // null leaves it alone; "" clears it.
-    expect(planBetaInfo({ ...emptyInfo(), review: { demoAccountPassword: null } }, remoteInfo()).changes).toEqual([]);
-    const cleared = planBetaInfo({ ...emptyInfo(), review: { demoAccountPassword: "" } }, remoteInfo());
-    expect(cleared.password).toBe("clear");
-    expect(changesJSON(cleared.changes)).toEqual([{ scope: "testflight/review", field: "demoAccountPassword", kind: "remove", from: "••••", to: null, secret: true }]);
+    // Left out leaves it alone; "" or null clears it, as in app.json.
+    expect(planBetaInfo({ ...emptyInfo(), review: {} }, remoteInfo()).changes).toEqual([]);
+    for (const empty of ["", null]) {
+      const cleared = planBetaInfo({ ...emptyInfo(), review: { demoAccountPassword: empty } }, remoteInfo());
+      expect(cleared.password).toBe("clear");
+      expect(changesJSON(cleared.changes)).toEqual([{ scope: "testflight/review", field: "demoAccountPassword", kind: "remove", from: "••••", to: null, secret: true }]);
+    }
   });
 
   test("push sends the resolved password to Apple and nowhere else", async () => {
@@ -588,6 +589,8 @@ describe("testflight test information", () => {
     ]);
     expect(JSON.stringify(problems)).not.toContain("hunter2");
     expect(validateBetaInfo({ ...emptyInfo(), review: { demoAccountRequired: true, demoAccountName: "a", demoAccountPassword: "keychain:ship/x" } })).toEqual([]);
+    expect(validateBetaInfo({ ...emptyInfo(), review: { demoAccountRequired: true, demoAccountName: "a" } })).toMatchObject([{ severity: "warning", field: "demoAccountPassword" }]);
+    expect(validateBetaInfo({ ...emptyInfo(), review: { demoAccountRequired: true, demoAccountName: "a", demoAccountPassword: null } })).toMatchObject([{ severity: "error", field: "demoAccountPassword" }]);
     expect(validateBetaInfo({ ...emptyInfo(), review: { demoAccountRequired: "yes" as unknown as boolean } })[0]!.message).toContain("true or false");
   });
 

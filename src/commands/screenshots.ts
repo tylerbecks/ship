@@ -32,7 +32,7 @@ file types, counts, and image sizes offline. media.lock.json records which
 file matches which upload; commit it.
 
   --version <x.y>    The App Store version (default: the one being prepared)
-  --platform <name>  ios, macos, tvos, or visionos (default: ship.json's)
+  --platform <p>     ios, macos, tvos, or visionos (default: ship.json's)
   --locale <code>    Only this language; repeat for more
   --type <TYPE>      Only this display or preview type; repeat for more
   --prune            push: delete screenshots and previews that aren't in the repo

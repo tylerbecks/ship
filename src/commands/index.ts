@@ -32,13 +32,14 @@ export const commands: Command[] = [
   ...beta,
   ...testers,
   ...archive,
-  // Features
   ...builds,
+  // TestFlight
   ...groups,
   ...feedback,
   ...testflight,
+  // App Store, in the order a release uses them
+  ...version,
   ...metadata,
   ...screenshots,
   ...release,
-  ...version,
 ];
