@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Resource, clearTokens, retry } from "../src/asc/client";
 import { type Credentials, useCredentials } from "../src/credentials";
+import { run } from "../src/exec";
 
 /** A fresh empty folder. */
 export const temp = (prefix = "ship-test-") => mkdtempSync(join(tmpdir(), prefix));
@@ -25,6 +26,28 @@ export async function testCredentials(overrides: Partial<Credentials> = {}): Pro
   useCredentials(creds);
   clearTokens();
   return { ...creds, publicKey };
+}
+
+/** Runs git in `cwd` with a fixed identity, and returns its trimmed stdout. Throws when git fails. */
+export async function git(cwd: string, ...args: string[]): Promise<string> {
+  const result = await run(["git", "-c", "user.name=Ship", "-c", "user.email=ship@example.com", "-c", "init.defaultBranch=main", ...args], { cwd });
+  if (result.code !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+/** Captures what console.log prints while `body` runs (a command's result). */
+export async function captureLog(body: () => Promise<unknown>): Promise<string> {
+  const original = console.log;
+  const lines: string[] = [];
+  console.log = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    await body();
+  } finally {
+    console.log = original;
+  }
+  return lines.join("\n");
 }
 
 // MARK: Mocking App Store Connect

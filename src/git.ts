@@ -5,6 +5,8 @@
 // reads the tags, and `git log testflight/<build>..origin/main` lists what
 // isn't shipped yet.
 
+import { existsSync, realpathSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { run } from "./exec";
 
 export interface Commit {
@@ -167,3 +169,64 @@ export function drift(before: Commit, after: Commit | undefined, rewritten: stri
 
 /** The SHIP_COMMIT build setting: the commit, marked when the build has uncommitted changes. */
 export const commitSetting = (commit: Commit) => (commit.changes.length ? `${commit.sha}-dirty` : commit.sha);
+
+// MARK: Worktrees
+
+/** A path with symlinks resolved (/var → /private/var on macOS), as git reports paths. */
+const real = (path: string) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+};
+
+/** The top of the checkout (main or worktree) that `dir` is in, or undefined outside git. */
+export async function checkoutTop(dir: string): Promise<string | undefined> {
+  if (!existsSync(dir)) return undefined;
+  const result = await git(dir, ["rev-parse", "--show-toplevel"]);
+  return result.code === 0 && result.stdout.trim() ? real(result.stdout.trim()) : undefined;
+}
+
+/**
+ * The repo's main checkout (where its .git folder is), from inside it or any
+ * of its worktrees. undefined outside git, or when the repo is bare or keeps
+ * its git folder somewhere else (a submodule).
+ */
+export async function mainCheckout(dir: string): Promise<string | undefined> {
+  if (!existsSync(dir)) return undefined;
+  let result = await git(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  // git before 2.31 has no --path-format; its answer is relative to `dir`.
+  if (result.code !== 0) result = await git(dir, ["rev-parse", "--git-common-dir"]);
+  if (result.code !== 0 || !result.stdout.trim()) return undefined;
+  const common = real(resolve(dir, result.stdout.trim()));
+  return basename(common) === ".git" ? dirname(common) : undefined;
+}
+
+/**
+ * Where a folder in a worktree lives in the main checkout: the same path
+ * relative to the checkout's top, so a ship.json in a subfolder maps to the
+ * same subfolder. Outside git (or in a bare repo) it's the folder itself.
+ */
+export async function canonicalRoot(configRoot: string): Promise<string> {
+  const [main, top] = await Promise.all([mainCheckout(configRoot), checkoutTop(configRoot)]);
+  if (!main || !top) return real(configRoot);
+  return join(main, relative(top, real(configRoot)));
+}
+
+/** The top of every checkout of the repo `dir` is in, main checkout first (`git worktree list`). */
+export async function worktreeRoots(dir: string): Promise<string[]> {
+  if (!existsSync(dir)) return [];
+  const result = await git(dir, ["worktree", "list", "--porcelain"]);
+  return result.code === 0 ? parseWorktreeList(result.stdout) : [];
+}
+
+/** The checkouts in `git worktree list --porcelain` output, skipping a bare repo's entry. */
+export function parseWorktreeList(output: string): string[] {
+  return output
+    .split(/\n\n+/)
+    .map((block) => block.split("\n"))
+    .filter((lines) => !lines.includes("bare"))
+    .map((lines) => lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length))
+    .filter((path): path is string => Boolean(path));
+}

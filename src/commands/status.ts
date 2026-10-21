@@ -3,7 +3,7 @@
 import { lookupApp } from "../asc/apps";
 import { type Build, recentBuilds } from "../asc/builds";
 import { type BetaGroup, betaGroups } from "../asc/testflight";
-import { type Project, loadApps, loadProject } from "../config";
+import { type Project, loadApps, loadProject, projectFor } from "../config";
 import { hasCredentials } from "../credentials";
 import { type Since, buildCommits, describeSince, fetchBuildTags, sinceBuild } from "../git";
 import { type Command, boolFlag, intFlag } from "../command";
@@ -44,9 +44,22 @@ export async function status(options: { app?: string; all?: boolean; limit?: num
       "Set one up with `ship auth set` (see `ship auth --help`).",
     );
   }
-  const projects = options.all
-    ? await Promise.all((await loadApps()).map((app) => loadProject({ app: app.name })))
-    : [await loadProject({ app: options.app })];
+  // With --all, an app whose ship.json is gone is skipped with a warning instead of failing the rest.
+  const skipped: { name: string; root: string; reason: string }[] = [];
+  const projects: Project[] = [];
+  if (options.all) {
+    for (const app of await loadApps()) {
+      try {
+        projects.push(await projectFor(app));
+      } catch (error) {
+        if (!(error instanceof ShipError)) throw error;
+        skipped.push({ name: app.name, root: app.root, reason: error.message });
+        ui.warn(`Skipping ${app.name}: ${error.message}`);
+      }
+    }
+  } else {
+    projects.push(await loadProject({ app: options.app }));
+  }
 
   const results: { name: string; bundleId: string; appId: string; builds: TaggedBuild[]; groups: BetaGroup[]; since: Since | null }[] = [];
   for (const project of projects) {
@@ -59,7 +72,8 @@ export async function status(options: { app?: string; all?: boolean; limit?: num
     results.push({ name: project.config.name, bundleId: project.config.bundleId, appId: id, builds: tagged, groups, since });
   }
 
-  ui.result({ apps: results }, () => {
+  ui.result({ apps: results, skipped }, () => {
+    if (options.all && !results.length && !skipped.length) console.log("No apps yet. Run `ship init` in an app's repo.");
     for (const app of results) {
       if (results.length > 1) console.log(`\n${app.name} (${app.bundleId})`);
       printBuilds(app.builds);

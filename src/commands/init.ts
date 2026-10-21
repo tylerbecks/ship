@@ -1,6 +1,6 @@
 // ship init: find the app's project and scheme, and write ship.json.
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { lookupApp } from "../asc/apps";
 import { hasCredentials } from "../credentials";
@@ -78,7 +78,8 @@ export async function init(options: { project?: string; scheme?: string; force?:
   }
 
   await saveProjectConfig(root, config);
-  await rememberApp({ name: config.name, bundleId, root });
+  const registered = await rememberApp({ name: config.name, bundleId, root });
+  if (registered !== realpathSync(root)) ui.note(`This is a worktree; ship knows the app by its main checkout, ${registered}`);
   const ignored = await ignoreWorkDir(root);
 
   ui.result({ config, file: join(root, CONFIG_FILE) }, () => {

@@ -60,6 +60,7 @@ export function useCredentials(creds: Credentials | undefined) {
 
 /** Whether a key is configured, without reading any secrets. */
 export async function hasCredentials(): Promise<boolean> {
+  if (cached) return true;
   const env = process.env;
   if (env.SHIP_ASC_KEY_ID && env.SHIP_ASC_ISSUER_ID && (env.SHIP_ASC_PRIVATE_KEY || env.SHIP_ASC_PRIVATE_KEY_PATH)) return true;
   const c = (await loadSettings()).credentials;
