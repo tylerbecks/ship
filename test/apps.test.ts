@@ -170,6 +170,17 @@ describe("the app list", () => {
     expect((await loadProject({ app: "com.example.app" })).root).toBe(main);
   });
 
+  test("--app finds a worktree's ship.json in a subfolder the main checkout doesn't have yet", async () => {
+    const { main, worktree } = await repoWithWorktree();
+    mkdirSync(join(worktree, "ios"));
+    writeFileSync(join(worktree, "ios", "ship.json"), shipJSON("com.example.app"));
+    expect(await rememberApp({ name: "App", bundleId: "com.example.app", root: join(worktree, "ios") })).toBe(join(main, "ios"));
+    const app = (await loadApps())[0]!;
+    expect(app.root).toBe(join(main, "ios"));
+    expect(await locateConfig(app)).toBe(join(worktree, "ios"));
+    expect((await loadProject({ app: "App" })).root).toBe(join(worktree, "ios"));
+  });
+
   test("a worktree's ship.json for another app doesn't count", async () => {
     const { main, worktree } = await repoWithWorktree();
     writeFileSync(join(worktree, "ship.json"), shipJSON("com.example.other"));

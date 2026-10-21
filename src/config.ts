@@ -247,9 +247,15 @@ export async function findApp(query: string): Promise<AppEntry> {
  */
 export async function locateConfig(entry: AppEntry): Promise<string | undefined> {
   if (existsSync(join(entry.root, CONFIG_FILE))) return entry.root;
-  const [main, top] = await Promise.all([mainCheckout(entry.root), checkoutTop(entry.root)]);
+  // git runs in a folder that exists: the root, or when the main checkout
+  // doesn't have that subfolder yet (it's new in the worktree), the nearest
+  // one above it.
+  let at = entry.root;
+  while (!existsSync(at) && dirname(at) !== at) at = dirname(at);
+  const [main, top] = await Promise.all([mainCheckout(at), checkoutTop(at)]);
   const sub = main && top ? relative(top, entry.root) : "";
-  for (const worktree of await worktreeRoots(entry.root)) {
+  if (sub.startsWith("..")) return undefined;
+  for (const worktree of await worktreeRoots(at)) {
     const root = join(worktree, sub);
     if (root === entry.root || !existsSync(join(root, CONFIG_FILE))) continue;
     const config = await readJSON<Partial<ProjectConfig> | null>(join(root, CONFIG_FILE), null).catch(() => null);
