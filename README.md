@@ -92,7 +92,44 @@ Build products and logs go in the repo's `.ship/` folder (git-ignored), so workt
 <!-- /feature:metadata -->
 
 <!-- feature:media -->
-(Coming: ship screenshots.)
+### Screenshots and app previews
+
+```
+ship screenshots pull                 # download the version's screenshots into appstore/
+ship screenshots validate             # check types, counts, and sizes offline
+ship screenshots diff                 # what push would change
+ship screenshots push --dry-run       # the same, as push sees it
+ship screenshots push                 # upload, replace, and reorder
+```
+
+They live next to the page's text, one folder per display type:
+
+```
+appstore/
+  media.lock.json
+  en-US/
+    screenshots/
+      APP_IPHONE_67/          6.9" iPhone
+        01-home.png
+        02-workout.png
+      APP_IPAD_PRO_3GEN_129/  13" iPad
+        01-home.png
+    previews/
+      IPHONE_67/
+        01-intro.mp4
+```
+
+Folder names are App Store Connect's display types (`APP_IPHONE_67`, `APP_IPHONE_65`, `APP_IPAD_PRO_3GEN_129`, `APP_DESKTOP`, `APP_APPLE_TV`, `APP_APPLE_VISION_PRO`, `APP_WATCH_ULTRA`, …) and, for previews, preview types, which drop the `APP_` (`IPHONE_67`). `ship screenshots validate` lists them all when a folder name is wrong. Screenshots are `.png` or `.jpg`; previews are `.mp4`, `.mov`, or `.m4v`. A set holds up to 10 screenshots and 3 previews.
+
+**Order is file name order**, compared the way people number things (`2-…` before `10-…`), so number the files. push puts each set in that order.
+
+**What push does.** A file whose contents match an uploaded screenshot is left alone; a new file is uploaded; a changed file is uploaded and replaces the old one. Screenshots in App Store Connect that aren't in the repo stay, after the repo's, unless you pass `--prune`, which deletes them (and whole sets whose folder is gone). Failed uploads are always cleaned up. Only languages and kinds with a folder are touched: without `en-US/previews/`, ship leaves en-US's previews alone, even with `--prune`. push waits for Apple to process each upload and stops with Apple's reason if one fails; `--no-wait` skips the wait.
+
+Screenshots can change only while a version is being prepared; push works on that version (or `--version`), and says to `ship release prepare` when there isn't one. `--locale` and `--type` narrow any command to some languages or types.
+
+**media.lock.json** (commit it). Apple re-encodes what you upload, so a pulled screenshot's bytes differ from the file that was uploaded. The lock records, for each pulled or pushed file, its MD5 and the checksum of the upload it stands for, so a pull followed by a push changes nothing. Edit or replace a file and push uploads it; delete the lock and push compares contents only (pulled files would upload again).
+
+**validate** runs offline and checks folder names, file types, counts, each screenshot's pixel size against [Apple's sizes](https://developer.apple.com/help/app-store-connect/reference/screenshot-specifications) for its type, and transparency (Apple rejects alpha channels). push runs it first and stops on errors. `diff --exit-code` exits 1 when there are changes, for CI.
 <!-- /feature:media -->
 
 ## Releasing to the App Store
