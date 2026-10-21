@@ -88,7 +88,29 @@ Build products and logs go in the repo's `.ship/` folder (git-ignored), so workt
 ## The App Store page as code
 
 <!-- feature:metadata -->
-(Coming: ship metadata.)
+Everything on the App Store page and in App Information lives in the repo as small files, so a pull request shows exactly what changes on the page:
+
+```
+appstore/                 # set "store" in ship.json to move it
+  app.json                # categories, content rights, copyright, age rating, App Review contact, release defaults
+  review-notes.txt        # notes for App Review
+  en-US/
+    name.txt  subtitle.txt  privacy-policy-url.txt  privacy-choices-url.txt
+    description.txt  keywords.txt  promotional-text.txt  whats-new.txt  support-url.txt  marketing-url.txt
+```
+
+```
+ship metadata pull        # once: write the files from App Store Connect (--force overwrites local edits)
+ship metadata diff        # what push would change (--exit-code for CI)
+ship metadata push        # apply it (--dry-run to preview, --prune to delete languages without a folder)
+ship metadata validate    # lengths, keyword bytes, URLs, app.json values, and secrets, offline
+```
+
+A missing file is left alone; an empty file clears the field. `keywords.txt` holds one keyword per line (push joins them with commas; the 100-byte limit counts the commas). A new language folder is added on push; it needs a `name.txt`.
+
+**When things can change.** Apple takes most changes only while a version is being prepared. Promotional text and content rights change any time; name, subtitle, privacy URLs, categories, and age rating change on the App Info being prepared; everything else on the version being prepared (or `--version <x.y>`). When something can't change yet, push stops and lists it; `--partial` pushes the rest. What's New is skipped on an app's first version, and the phased release and a scheduled release date are set by `ship release`, not push.
+
+**The demo account password** in `app.json` is a reference, never the password: `"demoAccountPassword": "keychain:ship/lift-demo-password"` (or `op://…`, `env:…`, `file:…`; see [Secrets](#secrets)). `ship secret set keychain:ship/lift-demo-password --stdin` saves it. Pull never writes the password, `validate` and push refuse one written out, and diff and push show it as `••••`.
 <!-- /feature:metadata -->
 
 <!-- feature:media -->
