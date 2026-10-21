@@ -607,6 +607,8 @@ interface Comparison {
   lock: MediaLock;
   media: LocalMedia;
   localizations: VersionLocalization[];
+  /** Remote files left alone: in App Store Connect, not in the repo, and no --prune. */
+  skipped: PushResult["skipped"];
 }
 
 /** Compares the store's media with a version's, set by set. */
@@ -642,14 +644,19 @@ async function compare(project: Project, version: AppStoreVersion, media: LocalM
     }
   }
   const changes = plans.flatMap(planChanges);
+  const skipped: PushResult["skipped"] = [];
   for (const plan of plans) {
+    const names = new Map(plan.input.remote.map((item) => [item.id, item.fileName]));
+    for (const id of plan.keptIds) {
+      skipped.push({ scope: `${plan.locale}/${plan.kind}/${plan.type}`, field: names.get(id) ?? id, reason: "not in the repo; --prune deletes it" });
+    }
     if (plan.keep) {
       ui.warn(
         `${plural(plan.keep, plan.kind)} in App Store Connect ${plan.keep === 1 ? "isn't" : "aren't"} in ${plan.locale}/${plan.kind}/${plan.type}; pass --prune to delete ${plan.keep === 1 ? "it" : "them"}`,
       );
     }
   }
-  return { version, plans, changes, lock, media, localizations };
+  return { version, plans, changes, lock, media, localizations, skipped };
 }
 
 const platformOf = (project: Project, options: { platform?: Platform }) => options.platform ?? project.platform;
@@ -730,12 +737,13 @@ export async function syncMedia(project: Project, options: MediaOptions): Promis
     ...empty,
     version: versionJSON(version),
     changes: comparison.changes,
+    skipped: comparison.skipped,
     sets: comparison.plans.map(setJSON),
   };
   if (dryRun || !comparison.changes.length) return result;
 
-  let lock = comparison.lock;
-  const removedPaths: string[] = [];
+  const before = comparison.lock;
+  let lock = before;
   try {
     for (const plan of comparison.plans) {
       await applyPlan(plan, comparison, options, {
@@ -743,18 +751,22 @@ export async function syncMedia(project: Project, options: MediaOptions): Promis
           result.uploaded.push(path);
           lock = updateLock(lock, { uploaded: [{ path, md5 }] });
         },
-        failed: (path) => removedPaths.push(path),
+        // Apple rejected it and it was deleted: forget the upload, and keep what the lock said before.
+        failed: (path) => {
+          result.uploaded = result.uploaded.filter((item) => item !== path);
+          lock = before[path] ? { ...lock, [path]: before[path] } : updateLock(lock, { removed: [path] });
+        },
         deleted: (fileName) => result.deleted.push(fileName),
         reordered: () => result.reordered.push(`${plan.locale}/${plan.type}`),
       });
     }
   } catch (error) {
-    await writeLock(project.storeDir, updateLock(lock, { removed: removedPaths }));
+    await writeLock(project.storeDir, lock);
     if (!(error instanceof ShipError)) throw error;
     const done = result.uploaded.length || result.deleted.length ? ` (before that: ${result.uploaded.length} uploaded, ${result.deleted.length} deleted)` : "";
     throw new ShipError(`${error.message}${done}`, error.code, error.hint, { ...error.details, uploaded: result.uploaded, deleted: result.deleted }, error.exitCode);
   }
-  await writeLock(project.storeDir, updateLock(lock, { removed: removedPaths }));
+  await writeLock(project.storeDir, lock);
   result.applied = true;
   return result;
 }

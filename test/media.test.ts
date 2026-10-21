@@ -486,11 +486,34 @@ describe("push and pull", () => {
     addFile(p, P("01-home.png"), png(1290, 2796));
     mock = fakeAsc({ states: [{ state: "FAILED", errors: [{ code: "IMAGE_TOOL_FAILURE", description: "The image is too dark." }] }] });
     const error = await syncMedia(p, { appId: "APP" }).catch((e) => e);
-    expect(error).toMatchObject({ code: "media-failed", details: { file: "01-home.png", uploaded: [P("01-home.png")] } });
+    expect(error).toMatchObject({ code: "media-failed", details: { file: "01-home.png", uploaded: [], deleted: [] } });
     expect(error.message).toContain("couldn't process 01-home.png: The image is too dark.");
     // The failed upload is deleted, and the lock doesn't claim it.
     expect(mock.calls.some((c) => c.method === "DELETE" && c.path === "/v1/appScreenshots/NEW")).toBe(true);
     expect(await readLock(p.storeDir)).toEqual({});
+  });
+
+  test("a replacement Apple rejects keeps the old upload and its lock entry", async () => {
+    const p = await project();
+    addFile(p, P("01-home.png"), png(1290, 2796, { seed: 3 }));
+    const locked = { [P("01-home.png")]: { md5: "pulled", checksum: "first" } };
+    writeFileSync(join(p.storeDir, "media.lock.json"), JSON.stringify(locked));
+    mock = fakeAsc({ screenshots: [shot("A", "home.png", "first")], states: [{ state: "FAILED", errors: [{ code: "X", description: "Bad." }] }] });
+    await expect(syncMedia(p, { appId: "APP" })).rejects.toMatchObject({ code: "media-failed" });
+    expect(mock.calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v1/appScreenshots/NEW"]);
+    expect(await readLock(p.storeDir)).toEqual(locked);
+  });
+
+  test("files in App Store Connect that aren't in the repo are reported as skipped", async () => {
+    const p = await project();
+    const image = png(1290, 2796);
+    addFile(p, P("01-home.png"), image);
+    mock = fakeAsc({ screenshots: [shot("A", "home.png", md5(image)), shot("B", "extra.png", "x")] });
+    expect(await pushMedia(p, { appId: "APP", dryRun: true })).toEqual({
+      changes: [],
+      applied: false,
+      skipped: [{ scope: "en-US/screenshots/APP_IPHONE_67", field: "extra.png", reason: "not in the repo; --prune deletes it" }],
+    });
   });
 
   test("a replaced file deletes its old upload; --prune deletes the rest", async () => {
