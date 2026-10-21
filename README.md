@@ -1,6 +1,6 @@
 # ship
 
-Build, upload, and manage TestFlight (and later the App Store) from the command line. One command per step, the same for people and for agents.
+Build, upload, and manage TestFlight and the App Store from the command line. One command per step, the same for people and for agents.
 
 ```
 ship init          # once per repo: finds the project, scheme, and bundle id → ship.json
@@ -19,24 +19,45 @@ bun run install-local     # compiles to one binary at ~/.local/bin/ship
 
 ## Set up
 
-**Once per machine: the App Store Connect API key.** In App Store Connect, go to Users and Access → Integrations → App Store Connect API → Team Keys and make a key with the **App Manager** role. One key covers every app on the team. Save the `.p8`, Key ID, and Issuer ID in 1Password, then:
+**Once per machine: the App Store Connect API key.** In App Store Connect, go to Users and Access → Integrations → App Store Connect API → Team Keys and make a key with the **App Manager** role. One key covers every app on the team. Download the `.p8` and note the Key ID and Issuer ID, then:
 
 ```
-ship auth set --key-id op://Private/ASC/key-id \
-              --issuer-id op://Private/ASC/issuer-id \
-              --private-key op://Private/ASC/AuthKey.p8
+ship auth set --key-id ABC123DEFG \
+              --issuer-id 69a6de7e-… \
+              --private-key file:~/Downloads/AuthKey_ABC123DEFG.p8 --keychain
 ```
 
-Values can be literal, `op://` (1Password), `env:NAME`, or `file:<path>`. Settings live in `~/.config/ship/config.json`, which holds only the references. To stop Touch ID prompts, give a 1Password service account read access to the key's vault and run `ship auth service-account op://Private/<token item>/credential` once; ship keeps the token in the Keychain for its own `op` calls. For CI, set `SHIP_ASC_KEY_ID`, `SHIP_ASC_ISSUER_ID`, and `SHIP_ASC_PRIVATE_KEY` (or `SHIP_ASC_PRIVATE_KEY_PATH`) instead.
+`--keychain` copies the key into the macOS login Keychain (item `ship` / `asc-private-key-<key id>`) and saves a reference to it, so the `.p8` can be deleted. Settings live in `~/.config/ship/config.json`, which holds only references, never the key. See [Secrets](#secrets) for the other places the key can live.
 
-**Once per repo:** `ship init` at the repo root. It finds the `.xcodeproj`, `.xcworkspace`, or App Playground `.swiftpm` package, the scheme that builds the app, and the bundle id, and writes `ship.json`. Commit it: every clone and worktree is then set up. When there's more than one choice, it lists them and the flag to pass. `ship remove` undoes it; `ship apps` lists every app set up on this machine, and `--app <name>` targets one from anywhere.
+**Once per repo:** `ship init` at the repo root. It finds the `.xcodeproj`, `.xcworkspace`, or App Playground `.swiftpm` package, the scheme that builds the app, its bundle id, and its platform, and writes `ship.json`. Commit it: every clone and worktree is then set up. When there's more than one choice, it lists them and the flag to pass. `ship remove` undoes it; `ship apps` lists every app set up on this machine, and `--app <name>` targets one from anywhere. Running `ship init` in a git worktree registers the repo's main checkout, so an app is listed once however many worktrees it has.
 
 `ship doctor` checks everything.
+
+## Secrets
+
+Every secret ship reads (the API key, and passwords in the store folder such as the App Review demo account) is either written out or, better, a reference to where it lives. All four sources work the same way; use whichever you already use:
+
+| Reference | Where | Good for |
+|---|---|---|
+| `keychain:<service>/<account>` | the macOS login Keychain | a Mac, with nothing else to install |
+| `op://<vault>/<item>/<field>` | 1Password, read with `op read` | teams that share secrets in 1Password |
+| `env:NAME` | an environment variable | CI |
+| `file:~/path` | a file | a `.p8` you keep on disk |
+
+`ship secret set keychain:ship/lift-demo-password --stdin` saves a Keychain item (`--from-file` and `--from-env` work too), and `ship secret check <ref>` says whether a reference resolves, without printing it.
+
+**1Password.** Point the key's values at `op://` references. ship keeps the key it read in the login Keychain for 7 days (`"cacheDays"` in config.json; 0 turns it off), so 1Password asks for Touch ID about once a week. To never see Touch ID, give a 1Password service account read access to the key's vault and run `ship auth service-account op://Private/<token item>/credential` once; ship keeps the token in the Keychain for its own `op` calls.
+
+**CI.** Set `SHIP_ASC_KEY_ID`, `SHIP_ASC_ISSUER_ID`, and `SHIP_ASC_PRIVATE_KEY` (or `SHIP_ASC_PRIVATE_KEY_PATH`). They override config.json. A private key whose newlines were stored as `\n` works as is.
+
+## Platforms
+
+ship builds iOS, macOS, tvOS, and visionOS apps. `ship init` detects the platform (iOS first when a target supports several; `--platform macos` picks another) and writes it to `ship.json` as `"platform"`. macOS apps export and upload a `.pkg`; the others an `.ipa`. Mac Catalyst isn't supported yet.
 
 ## How `ship beta` works
 
 1. Picks the build number: one above the highest in App Store Connect (or `--build`), and checks that there are no uncommitted changes.
-2. Archives a Release build and exports an **App Store Connect** .ipa (never "TestFlight Internal Only", which can't go to external testers or the App Store).
+2. Archives a Release build and exports an **App Store Connect** .ipa (a .pkg for macOS; never "TestFlight Internal Only", which can't go to external testers or the App Store).
 3. Checks the bundle id, build number, and export compliance key in the built app.
 4. Uploads with `altool` and tags the commit `testflight/<build>` (see below), then waits for processing and answers export compliance if the app doesn't declare it.
 5. Sets "What to Test" and adds the build to the internal groups.
@@ -64,9 +85,38 @@ For App Playground packages, the build number is written to `Package.swift`'s `b
 
 Build products and logs go in the repo's `.ship/` folder (git-ignored), so worktrees never collide. `SHIP_JOBS=4` limits parallel compile jobs.
 
+## The App Store page as code
+
+<!-- feature:metadata -->
+(Coming: ship metadata.)
+<!-- /feature:metadata -->
+
+<!-- feature:media -->
+(Coming: ship screenshots.)
+<!-- /feature:media -->
+
+## Releasing to the App Store
+
+<!-- feature:release -->
+(Coming: ship release and ship version.)
+<!-- /feature:release -->
+
+## TestFlight
+
+<!-- feature:testflight -->
+(Coming: ship groups, ship testflight, and ship feedback.)
+<!-- /feature:testflight -->
+
+## Builds
+
+<!-- feature:builds -->
+(Coming: ship builds.)
+<!-- /feature:builds -->
+
 ## For agents
 
 - Every command takes `--json`: stdout is one JSON object, `{ "ok": true, ... }` or `{ "ok": false, "error": { "code", "message", "hint", ... } }`; progress goes to stderr.
 - Nothing prompts. When a choice is needed, the error lists `choices` and the flag to pass.
 - Exit codes: 0 success, 1 failure, 2 usage error.
+- App Store Connect errors keep Apple's code (`api-409`), with `status` and Apple's `errors` array in the JSON. ship retries when Apple is busy (429, 5xx) and on network failures for requests that are safe to repeat.
 - `ship beta --dry-run` shows the plan without building.

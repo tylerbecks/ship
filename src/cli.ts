@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// ship: build, upload, and manage TestFlight (and later the App Store) from
+// ship: build, upload, and manage TestFlight and the App Store from
 // the command line, for people and agents alike.
 //
 // This file only parses the global flags and dispatches; the commands live in
