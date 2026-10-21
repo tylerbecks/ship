@@ -5,12 +5,14 @@ import { type Command } from "../command";
 import { CONFIG_FILE, findConfigRoot, loadProject, loadSettings } from "../config";
 import { hasCredentials, serviceAccountToken } from "../credentials";
 import { run } from "../exec";
+import { hasGenericPassword } from "../keychain";
+import { parseKeychainRef } from "../secrets";
 import { ui } from "../ui";
 
 export const doctorHelp = `ship doctor
 
-Checks everything ship needs: Xcode, altool, the API key, 1Password (when
-the key lives there), and this repo's ship.json.`;
+Checks everything ship needs: Xcode, altool, the API key and the Keychain
+items or 1Password it reads from, and this repo's ship.json.`;
 
 export async function doctor() {
   const checks: { name: string; ok: boolean; detail: string; fix?: string }[] = [];
@@ -22,7 +24,13 @@ export async function doctor() {
   add("altool (uploads)", altool.code === 0, altool.stdout.trim(), "Comes with Xcode.");
 
   const settings = await loadSettings();
-  const usesOp = Object.values(settings.credentials ?? {}).some((v) => String(v).startsWith("op://"));
+  const references = Object.values(settings.credentials ?? {}).filter((v): v is string => typeof v === "string");
+  for (const ref of [...new Set(references.filter((v) => v.startsWith("keychain:")))]) {
+    const parsed = parseKeychainRef(ref);
+    const found = parsed ? await hasGenericPassword(parsed.service, parsed.account) : false;
+    add(`Keychain item ${ref}`, found, found ? "found" : parsed ? "missing" : "not a valid reference", `Save it with \`ship secret set ${ref} --from-file <path>\`, or run \`ship auth set\` again.`);
+  }
+  const usesOp = references.some((v) => v.startsWith("op://"));
   if (usesOp) {
     const token = await serviceAccountToken();
     const op = await run(["op", "whoami", ...(settings.opAccount && !token ? ["--account", settings.opAccount] : [])], {

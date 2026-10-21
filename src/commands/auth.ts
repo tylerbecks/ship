@@ -2,14 +2,15 @@
 
 import { lookupApp } from "../asc/apps";
 import { bearerToken } from "../asc/client";
-import { type Command, stringFlag } from "../command";
+import { type Command, boolFlag, stringFlag } from "../command";
 import { loadSettings, saveSettings, settingsPath } from "../config";
-import { type Credentials, credentials, resolveValue, serviceAccountToken } from "../credentials";
+import { type Credentials, credentialSources, credentials, resolveValue, serviceAccountToken, useCredentials } from "../credentials";
 import { run } from "../exec";
-import { cacheExpiry, clearCached, clearServiceAccountToken, writeServiceAccountToken } from "../keychain";
+import { cacheExpiry, checkKeychainName, clearCached, clearServiceAccountToken, writeGenericPassword, writeServiceAccountToken } from "../keychain";
+import { normalizePrivateKey } from "../secrets";
 import { ShipError, ui } from "../ui";
 
-export const authHelp = `ship auth set --key-id <id> --issuer-id <id> --private-key <ref> [--op-account <account>]
+export const authHelp = `ship auth set --key-id <id> --issuer-id <id> --private-key <ref> [--keychain] [--op-account <account>]
 ship auth status
 ship auth refresh     Read the key from its source again (after rotating it)
 ship auth forget      Delete the cached copy from the Keychain
@@ -21,16 +22,25 @@ Sets up the App Store Connect API key ship signs requests with. Make a Team
 key with the App Manager role in App Store Connect → Users and Access →
 Integrations → App Store Connect API. One key works for every app on the team.
 
-Each value can be literal, or point at a secret, which is better:
-  op://<vault>/<item>/<field>   read from 1Password with \`op read\`
-  env:NAME                       read from an environment variable
-  file:~/path/AuthKey_ABC.p8     read from a file (--private-key)
+Each value can be literal, or point at where the secret lives:
+  keychain:<service>/<account>   the macOS login Keychain
+  op://<vault>/<item>/<field>    1Password, read with \`op read\`
+  env:NAME                       an environment variable
+  file:~/path/AuthKey_ABC.p8     a file
 
-Settings are saved in ~/.config/ship/config.json. Environment variables
-SHIP_ASC_KEY_ID, SHIP_ASC_ISSUER_ID, and SHIP_ASC_PRIVATE_KEY (or
-SHIP_ASC_PRIVATE_KEY_PATH) override them, for CI.
+On a Mac, the simplest is to hand ship the .p8 once and keep it in the
+Keychain: \`--private-key file:~/Downloads/AuthKey_ABC.p8 --keychain\` saves
+the key as the Keychain item ship / asc-private-key-<key id> and points at
+it, so the .p8 can be deleted. \`ship secret\` saves and checks other items.
 
-After reading the key, ship keeps a copy in the macOS login Keychain for 7
+Settings are saved in ~/.config/ship/config.json, which holds only the
+references. Environment variables SHIP_ASC_KEY_ID, SHIP_ASC_ISSUER_ID, and
+SHIP_ASC_PRIVATE_KEY (or SHIP_ASC_PRIVATE_KEY_PATH) override them, for CI.
+
+  --keychain              Save the private key in the Keychain and use that
+  --op-account <account>  The 1Password account, when you have more than one
+
+With 1Password, ship keeps a copy of the key in the login Keychain for 7
 days, so 1Password (and Touch ID) is asked about once a week, not every run.
 Change that with "cacheDays" in config.json (0 turns it off).
 
@@ -40,9 +50,12 @@ it once: \`ship auth service-account op://Private/<item>/credential\`. ship
 reads the token (one last Touch ID), checks it, and keeps it in the Keychain.
 Only ship's own \`op\` calls use it, so your shell's \`op\` is unaffected.`;
 
+/** The Keychain item `ship auth set --keychain` keeps a key's .p8 in. */
+export const keychainKeyRef = (keyId: string) => ({ service: "ship", account: `asc-private-key-${keyId}`, ref: `keychain:ship/asc-private-key-${keyId}` });
+
 export async function auth(
   action: string,
-  options: { keyId?: string; issuerId?: string; privateKey?: string; opAccount?: string; ref?: string },
+  options: { keyId?: string; issuerId?: string; privateKey?: string; opAccount?: string; keychain?: boolean; ref?: string },
 ) {
   if (action === "service-account") return serviceAccount(options.ref);
   if (action === "forget") {
@@ -50,10 +63,13 @@ export async function auth(
     ui.result({ cleared: true }, () => console.log("Deleted the cached key from the Keychain. The next command reads it again."));
     return;
   }
-  if (action === "refresh") await clearCached();
   if (!["set", "status", "refresh"].includes(action)) {
     throw new ShipError(`Unknown auth action "${action}"`, "usage", "Use set, status, refresh, forget, or service-account.", undefined, 2);
   }
+  if (options.keychain && action !== "set") {
+    throw new ShipError("--keychain goes with `ship auth set`", "usage", "ship auth set --key-id <id> --issuer-id <id> --private-key file:<path> --keychain", undefined, 2);
+  }
+  if (action === "refresh") await clearCached();
   if (action === "set") {
     if (!options.keyId || !options.issuerId || !options.privateKey) {
       throw new ShipError("Pass --key-id, --issuer-id, and --private-key", "usage", "See `ship auth --help`.", undefined, 2);
@@ -63,13 +79,16 @@ export async function auth(
     if (options.opAccount) settings.opAccount = options.opAccount;
     // Check the key works before saving it.
     const creds: Credentials = {
-      keyId: (await resolveValue(options.keyId, settings.opAccount))!,
-      issuerId: (await resolveValue(options.issuerId, settings.opAccount))!,
-      privateKey: (await resolveValue(options.privateKey, settings.opAccount))!,
+      keyId: (await resolveValue(options.keyId, settings.opAccount))!.trim(),
+      issuerId: (await resolveValue(options.issuerId, settings.opAccount))!.trim(),
+      privateKey: normalizePrivateKey((await resolveValue(options.privateKey, settings.opAccount))!),
     };
     await bearerToken(creds);
+    if (options.keychain) settings.credentials.privateKey = await keepInKeychain(creds, options.privateKey);
     await saveSettings(settings);
     await clearCached();
+    // The check below uses the key just read, instead of reading it again.
+    useCredentials(creds);
     ui.ok(`Saved to ${settingsPath}`);
   }
   // status, refresh, and the end of set: prove the key works with a real request.
@@ -77,6 +96,7 @@ export async function auth(
   await lookupApp("com.example.ship-auth-check");
   const settings = await loadSettings();
   const expires = await cacheExpiry();
+  const sources = await credentialSources();
   ui.result(
     {
       valid: true,
@@ -84,12 +104,27 @@ export async function auth(
       keyId: settings.credentials?.keyId,
       cachedUntil: expires ? new Date(expires).toISOString() : null,
       serviceAccount: Boolean(await serviceAccountToken()),
+      sources,
     },
     () => {
       console.log("The App Store Connect API key works.");
+      console.log(`Key id: ${sources.keyId ?? "?"}. Issuer id: ${sources.issuerId ?? "?"}. Private key: ${sources.privateKey ?? "?"}.`);
       if (expires) console.log(`Cached in the Keychain until ${new Date(expires).toLocaleString()}.`);
     },
   );
+}
+
+/** Saves the resolved private key as a Keychain item and returns the reference to it. */
+async function keepInKeychain(creds: Credentials, reference: string): Promise<string> {
+  const { service, account, ref } = keychainKeyRef(creds.keyId);
+  checkKeychainName(account, "account");
+  if (reference === ref) return ref;
+  if (!(await writeGenericPassword(service, account, creds.privateKey, `ship: App Store Connect API key ${creds.keyId}`))) {
+    throw new ShipError("Couldn't save the key to the Keychain", "keychain-failed", "Is the login Keychain unlocked? Try again, or leave out --keychain.");
+  }
+  ui.ok(`Saved the private key in the Keychain as ${ref}`);
+  if (reference.startsWith("file:")) ui.note(`ship reads it from the Keychain now, so you can delete ${reference.slice("file:".length)}.`);
+  return ref;
 }
 
 async function serviceAccount(ref: string | undefined) {
@@ -142,6 +177,7 @@ export const commands: Command[] = [
       "issuer-id": { type: "string" },
       "private-key": { type: "string" },
       "op-account": { type: "string" },
+      keychain: { type: "boolean" },
     },
     run: (ctx) =>
       auth(ctx.args[0] ?? "status", {
@@ -149,6 +185,7 @@ export const commands: Command[] = [
         issuerId: stringFlag(ctx, "issuer-id"),
         privateKey: stringFlag(ctx, "private-key"),
         opAccount: stringFlag(ctx, "op-account"),
+        keychain: boolFlag(ctx, "keychain"),
         ref: ctx.args[1],
       }),
   },

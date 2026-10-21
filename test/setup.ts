@@ -20,3 +20,16 @@ export const networkGuard = (async (input: string | URL | Request) => {
 }) as unknown as typeof fetch;
 
 globalThis.fetch = networkGuard;
+
+// Nor the Keychain or 1Password: a test that needs them replaces these with fakes.
+const { security } = await import("../src/keychain");
+const { tools } = await import("../src/secrets");
+security.run = async (args) => {
+  throw new Error(`Unmocked Keychain call: security ${args[0]}`);
+};
+security.interactive = async () => {
+  throw new Error("Unmocked Keychain call: security -i");
+};
+tools.op = async (args) => {
+  throw new Error(`Unmocked 1Password call: op ${args[0]}`);
+};

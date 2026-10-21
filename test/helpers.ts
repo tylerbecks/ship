@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { type Resource, clearTokens, retry } from "../src/asc/client";
 import { type Credentials, useCredentials } from "../src/credentials";
 import { run } from "../src/exec";
+import { security } from "../src/keychain";
 
 /** A fresh empty folder. */
 export const temp = (prefix = "ship-test-") => mkdtempSync(join(tmpdir(), prefix));
@@ -126,6 +127,42 @@ export const resource = (type: string, id: string, attributes: Record<string, un
   attributes,
   ...(relationships ? { relationships } : {}),
 });
+
+// MARK: A fake Keychain
+
+/**
+ * Replaces `security` with an in-memory Keychain until `restore()`. Items are
+ * keyed "service/account"; reads print non-printable values as hex, like
+ * the real `security -w` does.
+ */
+export function fakeKeychain(items: Record<string, string> = {}) {
+  const original = { ...security };
+  const store = new Map(Object.entries(items));
+  const find = (args: string[]) => {
+    const service = args[args.indexOf("-s") + 1];
+    const account = args.includes("-a") ? args[args.indexOf("-a") + 1] : undefined;
+    return [...store.keys()].find((key) => (account === undefined ? key.split("/")[0] === service : key === `${service}/${account}`));
+  };
+  security.run = async (args) => {
+    const key = find(args);
+    if (args[0] === "delete-generic-password") {
+      if (key) store.delete(key);
+      return { code: key ? 0 : 44, stdout: "", stderr: "" };
+    }
+    if (!key) return { code: 44, stdout: "", stderr: "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain." };
+    const value = store.get(key)!;
+    const printable = /^[\x20-\x7e]*$/.test(value);
+    return { code: 0, stdout: args.includes("-w") ? `${printable ? value : Buffer.from(value).toString("hex")}\n` : "attributes", stderr: "" };
+  };
+  security.interactive = async (commands) => {
+    const match = commands.match(/-s (\S+) -a (\S+) -l "[^"]*" -X ([0-9a-f]+)/);
+    if (match) store.set(`${match[1]}/${match[2]}`, Buffer.from(match[3]!, "hex").toString());
+  };
+  return {
+    items: store,
+    restore: () => Object.assign(security, original),
+  };
+}
 
 /** Makes retries instant. Returns the waits ship asked for, and a restore function. */
 export function noRetryDelay() {

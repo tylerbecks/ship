@@ -14,6 +14,7 @@ import { commands as init } from "./init";
 import { commands as metadata } from "./metadata";
 import { commands as release } from "./release";
 import { commands as screenshots } from "./screenshots";
+import { commands as secret } from "./secret";
 import { commands as status } from "./status";
 import { commands as testers } from "./testers";
 import { commands as testflight } from "./testflight";
@@ -24,6 +25,7 @@ export const commands: Command[] = [
   ...init,
   ...apps,
   ...auth,
+  ...secret,
   ...doctor,
   // Every day
   ...status,

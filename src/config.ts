@@ -50,12 +50,16 @@ export const shipHome = process.env.SHIP_HOME ?? join(homedir(), ".config", "shi
 const appsFile = join(shipHome, "apps.json");
 const settingsFile = join(shipHome, "config.json");
 
-/** Machine settings. Values can be literal, `op://vault/item/field` (1Password), or `env:NAME`. */
+/**
+ * Machine settings. Credential values can be literal or a reference:
+ * `keychain:<service>/<account>`, `op://vault/item/field` (1Password),
+ * `env:NAME`, or `file:<path>` (see src/secrets.ts).
+ */
 export interface Settings {
   credentials?: {
     keyId?: string;
     issuerId?: string;
-    /** The .p8 contents, as an op:// or env: reference, or `file:<path>`. */
+    /** The .p8 contents, as a keychain:, op://, env:, or file: reference. */
     privateKey?: string;
   };
   /** The 1Password account for `op read`, when you have more than one. */
