@@ -178,6 +178,10 @@ export async function groups(ctx: Context) {
   checkArgs(ctx, action, { list: 0, create: 1, rename: 2, link: 1, delete: 1 }[action]!, lines[action]!);
   const limit = intFlag(ctx, "limit", LIMIT);
   const [, name = "", second] = ctx.args;
+  if (action === "link" && second !== "on" && second !== "off") {
+    // linkUpdate says the same once it has the group; this says it before any request.
+    linkUpdate({ id: "", name, isInternal: false }, second, {});
+  }
 
   // Check what's checkable before talking to App Store Connect.
   const create =

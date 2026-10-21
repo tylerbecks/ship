@@ -295,6 +295,8 @@ describe("groups", () => {
     expect(await rejects(() => groups(ctx(["rename", "A", "B"], { internal: true })))).toMatchObject({ code: "usage" });
     expect(await rejects(() => groups(ctx(["create", "Beta", "testers"])))).toMatchObject({ code: "usage", hint: expect.stringContaining('"Beta testers"') });
     expect(await rejects(() => groups(ctx(["delete"])))).toMatchObject({ code: "usage" });
+    expect(await rejects(() => groups(ctx(["link", "Friends", "maybe"])))).toMatchObject({ code: "usage", details: { choices: ["on", "off"] } });
+    expect(await rejects(() => testers("list", [], { app: "Lift", group: " " }))).toMatchObject({ code: "usage" });
     expect(await rejects(() => groups(ctx(["archive"])))).toMatchObject({ code: "usage", details: { choices: ["list", "create", "rename", "link", "delete"] } });
     expect(mock.calls).toEqual([]);
   });

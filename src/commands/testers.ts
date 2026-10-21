@@ -109,6 +109,9 @@ export async function testers(action: string, emails: string[], options: { app?:
   if (options.everywhere && options.group !== undefined) {
     throw new ShipError("Pass --group or --everywhere, not both", "usage", "ship testers remove a@example.com --everywhere", { choices: ["--group", "--everywhere"] }, 2);
   }
+  if (options.group !== undefined && !options.group.trim()) {
+    throw new ShipError("--group needs a name", "usage", 'ship testers --group "Beta testers"', undefined, 2);
+  }
   const wanted = uniqueEmails(emails);
   if (action !== "list") checkEmails(wanted, action);
   if (action === "list" && emails.length) {
