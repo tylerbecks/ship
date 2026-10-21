@@ -1,12 +1,21 @@
 // Runs before every test file (bunfig.toml). Keeps tests away from this
 // machine's ship settings, credentials, and the network.
 
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Before anything imports src/config.ts, which reads SHIP_HOME once.
 process.env.SHIP_HOME = mkdtempSync(join(tmpdir(), "ship-home-"));
+
+// Git without this machine's settings: a global fsmonitor, pager, signing, or
+// external diff tool changes what git prints and how long it takes.
+const gitHome = mkdtempSync(join(tmpdir(), "ship-git-"));
+writeFileSync(join(gitHome, "gitconfig"), "");
+process.env.GIT_CONFIG_GLOBAL = join(gitHome, "gitconfig");
+process.env.GIT_CONFIG_NOSYSTEM = "1";
+process.env.GIT_AUTHOR_NAME = process.env.GIT_COMMITTER_NAME = "Ship";
+process.env.GIT_AUTHOR_EMAIL = process.env.GIT_COMMITTER_EMAIL = "ship@example.com";
 
 for (const name of Object.keys(process.env)) {
   if (name.startsWith("SHIP_ASC_")) delete process.env[name];
