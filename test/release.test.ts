@@ -527,9 +527,18 @@ describe("pickSubmission", () => {
     expect(error.hint).toContain("ship release cancel");
   });
 
-  test("a draft holding another version is an error", () => {
+  test("a draft holding another version is an error pointing at submitting it, not cancel", () => {
     const other = submission("s1", "READY_FOR_REVIEW", [{ versionId: "v13" }]);
-    expect(caught(() => pickSubmission([other], "v14", "1.4")).code).toBe("submission-has-other-version");
+    const versions = [version("v14", "1.4", "PREPARE_FOR_SUBMISSION"), version("v13", "1.3", "PREPARE_FOR_SUBMISSION")];
+    const error = caught(() => pickSubmission([other], "v14", "1.4", versions));
+    expect(error).toMatchObject({ code: "submission-has-other-version", message: "A draft submission holds version 1.3", details: { version: "1.3" } });
+    expect(error.hint).toBe("Submit that version first with `ship release submit --version 1.3`, or remove it from the draft in App Store Connect (App Review).");
+    // ship release cancel refuses a draft, so the hint can't send you there.
+    expect(error.hint).not.toContain("cancel");
+    // A rejected one can be canceled.
+    const rejected = caught(() => pickSubmission([submission("s2", "UNRESOLVED_ISSUES", [{ versionId: "v13" }])], "v14", "1.4", versions));
+    expect(rejected.hint).toContain("ship release cancel --version 1.3");
+    expect(cancelTarget([submission("s2", "UNRESOLVED_ISSUES", [{ versionId: "v13" }])], versions, versions[1]).id).toBe("s2");
     // A removed item doesn't count.
     const removed = submission("s1", "READY_FOR_REVIEW", [{ versionId: "v13", state: "REMOVED" }]);
     expect(pickSubmission([removed], "v14", "1.4").kind).toBe("reuse");

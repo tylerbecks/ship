@@ -271,11 +271,13 @@ export const hasVersion = (submission: ReviewSubmission, versionId: string) =>
  * What to do with the open submissions before submitting a version: it's
  * already in review; reuse a draft (READY_FOR_REVIEW) or a rejected one
  * (UNRESOLVED_ISSUES); or start a new one. Another version with Apple is an error.
+ * `versions` names the other version in the hint.
  */
 export function pickSubmission(
   submissions: ReviewSubmission[],
   versionId: string | undefined,
   versionString: string,
+  versions: AppStoreVersion[] = [],
 ): { kind: "in-review"; submission: ReviewSubmission } | { kind: "reuse"; submission: ReviewSubmission } | { kind: "create" } {
   const mine = versionId ? submissions.find((submission) => hasVersion(submission, versionId)) : undefined;
   if (mine && IN_REVIEW_STATES.includes(mine.state)) return { kind: "in-review", submission: mine };
@@ -298,11 +300,17 @@ export function pickSubmission(
   if (draft) return { kind: "reuse", submission: draft };
   const blocked = submissions.find((submission) => ["READY_FOR_REVIEW", "UNRESOLVED_ISSUES"].includes(submission.state));
   if (blocked) {
+    const otherId = blocked.items.find((item) => item.versionId && item.versionId !== versionId && item.state !== "REMOVED")?.versionId;
+    const other = versions.find((version) => version.id === otherId)?.versionString;
+    const rejected = blocked.state === "UNRESOLVED_ISSUES";
+    // A rejected submission can be canceled; a draft was never sent, so cancel has nothing to take back.
     throw new ShipError(
-      `A ${blocked.state === "UNRESOLVED_ISSUES" ? "rejected" : "draft"} submission holds another App Store version`,
+      `A ${rejected ? "rejected" : "draft"} submission holds ${other ? `version ${other}` : "another App Store version"}`,
       "submission-has-other-version",
-      "Remove that version from the submission in App Store Connect (App Review), or cancel it with `ship release cancel`.",
-      { submission: { id: blocked.id, state: blocked.state } },
+      rejected
+        ? `Cancel it with \`ship release cancel --version ${other ?? "<x.y>"}\`, or remove that version from it in App Store Connect (App Review).`
+        : `Submit that version first with \`ship release submit --version ${other ?? "<x.y>"}\`, or remove it from the draft in App Store Connect (App Review).`,
+      { submission: { id: blocked.id, state: blocked.state }, ...(other ? { version: other } : {}) },
     );
   }
   return { kind: "create" };

@@ -517,7 +517,7 @@ export async function submit(project: Project, options: ReleaseOptions): Promise
 
   // Already with Apple: nothing to do.
   const known = plan.action === "create" ? undefined : plan.version;
-  const pick = pickSubmission(submissions, known?.id, versionString);
+  const pick = pickSubmission(submissions, known?.id, versionString, context.versions);
   if (pick.kind === "in-review" || (plan.action === "locked" && IN_REVIEW_STATES.includes(plan.version.state))) {
     const submission = pick.kind === "in-review" ? pick.submission : submissions.find((s) => known && hasVersion(s, known.id));
     ui.ok(`${versionString} is already ${versionStateText(known?.state ?? "WAITING_FOR_REVIEW")}`);
