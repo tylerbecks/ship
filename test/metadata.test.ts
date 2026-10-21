@@ -445,6 +445,10 @@ describe("planning a push", () => {
     expect(planMetadata({ app: { release: { type: "MANUAL", phased: true } }, locales: {} }, remote()).ops[0]!.body).toEqual({
       data: { type: "appStoreVersions", id: "v2", attributes: { releaseType: "MANUAL" } },
     });
+    // `ship release --release` sets it instead.
+    const skipped = planMetadata({ app: { release: { type: "MANUAL" } }, locales: {} }, remote(), { skipReleaseType: "--release sets the release type" });
+    expect(skipped.ops).toEqual([]);
+    expect(skipped.skipped).toEqual([{ scope: "app", field: "release.type", reason: "--release sets the release type" }]);
   });
 
   test("the demo password is compared but never shown", () => {

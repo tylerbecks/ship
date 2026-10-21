@@ -348,7 +348,14 @@ async function prepareVersion(context: ReleaseContext, versionString: string, pl
     // A dry-run rename hasn't renamed yet: compare with the version under its current name.
     const target = dryRun && plan.action === "rename" ? plan.version.versionString : versionString;
     ui.step("Pushing appstore/ text");
-    pushed.metadata = await pushMetadata(context.project, { appId: context.appId, version: target, dryRun, platform: context.platform });
+    pushed.metadata = await pushMetadata(context.project, {
+      appId: context.appId,
+      version: target,
+      dryRun,
+      platform: context.platform,
+      // --release decides the release type; app.json's would undo it, after the timing step read the version.
+      ...(options.release !== undefined ? { skipReleaseType: "--release sets the release type" } : {}),
+    });
     ui.step("Pushing appstore/ screenshots");
     pushed.media = await pushMedia(context.project, { appId: context.appId, version: target, dryRun, platform: fromAscPlatform(context.platform) });
   }

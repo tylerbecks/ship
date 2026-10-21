@@ -314,6 +314,8 @@ export interface PlanOptions {
   prune?: boolean;
   /** The demo account password app.json's reference points at, or why it couldn't be read. */
   password?: { value?: string; error?: string };
+  /** Leave app.json's release type alone, for this reason (`ship release --release` sets it). */
+  skipReleaseType?: string;
 }
 
 type Need = "always" | "appInfo" | "version";
@@ -464,7 +466,9 @@ export function planMetadata(local: LocalMetadata, remote: RemoteMetadata, optio
   if (app.copyright !== undefined) versionDesired.copyright = app.copyright;
   const releaseType = app.release?.type;
   if (releaseType !== undefined) {
-    if (releaseType === "SCHEDULED" && version?.releaseType !== "SCHEDULED") {
+    if (options.skipReleaseType) {
+      plan.skipped.push({ scope: "app", field: "release.type", reason: options.skipReleaseType });
+    } else if (releaseType === "SCHEDULED" && version?.releaseType !== "SCHEDULED") {
       plan.skipped.push({ scope: "app", field: "release.type", reason: "a scheduled release needs a date: use `ship release submit --release <date>`" });
     } else {
       versionDesired["release.type"] = releaseType;
@@ -661,6 +665,8 @@ export interface MetadataOptions {
   locales?: string[];
   prune?: boolean;
   platform?: AscPlatform;
+  /** See PlanOptions. */
+  skipReleaseType?: string;
 }
 
 /** Reads both sides and plans. Shared by diff and push. */
@@ -682,7 +688,7 @@ export async function prepare(project: Project, options: MetadataOptions & { str
   const local = localFromSnapshot(snapshot, project.storeDir);
   const remote = await fetchRemote(options.appId, options.platform ?? platformInfo(project.platform).asc, { version: options.version });
   const password = await reviewPassword(local, options.strict);
-  const plan = planMetadata(local, remote, { locales: options.locales, prune: options.prune, password });
+  const plan = planMetadata(local, remote, { locales: options.locales, prune: options.prune, password, skipReleaseType: options.skipReleaseType });
   return { local, remote, plan };
 }
 
@@ -694,7 +700,7 @@ export async function prepare(project: Project, options: MetadataOptions & { str
  */
 export async function pushMetadata(
   project: Project,
-  options: { appId: string; version?: string; dryRun?: boolean; partial?: boolean; prune?: boolean; locales?: string[]; platform?: AscPlatform },
+  options: { appId: string; version?: string; dryRun?: boolean; partial?: boolean; prune?: boolean; locales?: string[]; platform?: AscPlatform; skipReleaseType?: string },
 ): Promise<MetadataPushResult> {
   const dryRun = Boolean(options.dryRun);
   if (!existsSync(project.storeDir)) {

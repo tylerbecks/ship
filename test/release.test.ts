@@ -971,6 +971,27 @@ describe("release flows", () => {
     expect(result).toMatchObject({ renamed: true, releaseType: "SCHEDULED", earliestReleaseDate: "2026-11-03T10:00:00Z", phased: false });
   });
 
+  test("prepare --push --release keeps the release type --release asked for, not app.json's", async () => {
+    mkdirSync(project.storeDir, { recursive: true });
+    writeFileSync(join(project.storeDir, "app.json"), JSON.stringify({ release: { type: "AFTER_APPROVAL" } }));
+    const world = asc({
+      versions: [versionResource("v14", "1.4", "PREPARE_FOR_SUBMISSION", { releaseType: "MANUAL" }, "b37"), live],
+      builds: [{ id: "b37", number: "37", version: "1.4" }],
+      submissions: [],
+    });
+    // The rest of what the metadata push reads.
+    mock = mockAsc((call: AscCall) => {
+      if (call.method === "GET" && call.path === "/v1/appInfos/info1") return { json: jsonApi(resource("appInfos", "info1", {})) };
+      if (call.method === "GET" && call.path === "/v1/appInfos/info1/ageRatingDeclaration") return { status: 404, json: { errors: [{ status: "404" }] } };
+      return world(call);
+    });
+    const result = await prepare(project, { version: "1.4", push: true, release: "manual", now: NOW });
+    const releaseTypes = mock.calls.filter((call) => call.method === "PATCH" && call.path === "/v1/appStoreVersions/v14").map((call) => (call.body as any).data.attributes.releaseType);
+    expect(releaseTypes.filter((type) => type !== undefined && type !== "MANUAL")).toEqual([]);
+    expect(result).toMatchObject({ releaseType: "MANUAL" });
+    expect(result.pushed.metadata?.skipped).toContainEqual(expect.objectContaining({ field: "release.type", reason: "--release sets the release type" }));
+  });
+
   test("prepare --push --dry-run for a version that doesn't exist yet asks nothing of the store folder", async () => {
     mkdirSync(join(project.storeDir, "en-US"), { recursive: true });
     writeFileSync(join(project.storeDir, "en-US", "description.txt"), "An app.\n");
