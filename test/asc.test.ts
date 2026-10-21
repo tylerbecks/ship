@@ -8,6 +8,7 @@ import {
   ascHint,
   associatedErrors,
   bearerToken,
+  clockSkew,
   del,
   get,
   many,
@@ -135,6 +136,72 @@ describe("retries", () => {
     expect(error.message).toBe(
       "App Store Connect: Authentication credentials are missing or invalid.: Provide a properly configured and signed bearer token.",
     );
+  });
+
+  test("a connection that drops while the body is read is retried like any network failure", async () => {
+    let tries = 0;
+    const previous = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      if (++tries === 1) {
+        const body = new ReadableStream({
+          pull(controller) {
+            controller.error(new TypeError("Connection reset"));
+          },
+        });
+        return new Response(body, { status: 200 });
+      }
+      return Response.json(jsonApi([resource("apps", "1")]));
+    }) as unknown as typeof fetch;
+    try {
+      const doc = await get("/v1/apps");
+      expect(tries).toBe(2);
+      expect(many(doc).map((app) => app.id)).toEqual(["1"]);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  test("a DELETE whose retry finds the thing gone succeeded the first time", async () => {
+    let tries = 0;
+    const previous = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      // Apple deleted it, but the answer never arrived.
+      if (++tries === 1) throw new TypeError("socket hang up");
+      return Response.json({ errors: [{ status: "404", code: "NOT_FOUND" }] }, { status: 404 });
+    }) as unknown as typeof fetch;
+    try {
+      await del("/v1/appScreenshots/s1");
+      expect(tries).toBe(2);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  test("a DELETE that finds nothing on its first try is still a 404", async () => {
+    mock = mockAsc(() => ({ status: 404, json: { errors: [{ status: "404", code: "NOT_FOUND" }] } }));
+    const error = await caught(del("/v1/appScreenshots/s1"));
+    expect(error.code).toBe("api-404");
+  });
+
+  test("a 401 with a skewed clock signs the retry in Apple's time, and the hint names the clock", async () => {
+    const appleTime = Date.now() + 30 * 60_000;
+    const issued: number[] = [];
+    mock = mockAsc((call) => {
+      const payload = call.headers.get("authorization")!.split(".")[1]!;
+      issued.push(JSON.parse(Buffer.from(payload, "base64url").toString()).iat);
+      return issued.length === 1
+        ? { status: 401, json: { errors: [{ status: "401", code: "NOT_AUTHORIZED" }] }, headers: { Date: new Date(appleTime).toUTCString() } }
+        : { json: jsonApi([]) };
+    });
+    await get("/v1/apps");
+    expect(issued[1]! - issued[0]!).toBeGreaterThan(29 * 60);
+
+    mock.restore();
+    mock = mockAsc(() => ({ status: 401, json: { errors: [] }, headers: { Date: new Date(Date.now() - 20 * 60_000).toUTCString() } }));
+    const error = await caught(get("/v1/apps"));
+    expect(error.code).toBe("api-401");
+    expect(error.hint).toContain("ahead of Apple's");
+    expect(clockSkew("not a date")).toBe(0);
   });
 
   test("sends a signed bearer token", async () => {

@@ -33,12 +33,21 @@ export const retry = {
 /** Tokens by key, so asking for another key's token never returns this one's. */
 const tokens = new Map<string, { value: string; expires: number }>();
 
+/**
+ * How far Apple's clock is ahead of this machine's, in ms, learned from the
+ * Date header of a 401. Tokens are signed in Apple's time once it's known.
+ */
+export const clock = { offsetMs: 0 };
+
+/** Clock differences smaller than this don't matter to a 15-minute token. */
+const CLOCK_SLACK_MS = 60_000;
+
 const tokenKey = (creds: Credentials) =>
   `${creds.keyId}:${creds.issuerId}:${createHash("sha256").update(creds.privateKey).digest("hex").slice(0, 16)}`;
 
 /** A JWT for the API, reused until a minute before it expires. `fresh` signs a new one. */
 export async function bearerToken(creds?: Credentials, options: { fresh?: boolean } = {}): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
+  const now = Math.floor((Date.now() + clock.offsetMs) / 1000);
   const resolved = creds ?? (await credentials());
   const key = tokenKey(resolved);
   const cached = tokens.get(key);
@@ -70,8 +79,11 @@ export async function bearerToken(creds?: Credentials, options: { fresh?: boolea
   return value;
 }
 
-/** Forgets every signed token (tests use it). */
-export const clearTokens = () => tokens.clear();
+/** Forgets every signed token and the clock difference (tests use it). */
+export const clearTokens = () => {
+  tokens.clear();
+  clock.offsetMs = 0;
+};
 
 function pemToDer(pem: string): ArrayBuffer {
   const base64 = pem.replace(/-----(BEGIN|END) PRIVATE KEY-----/g, "").replace(/\s+/g, "");
@@ -163,8 +175,9 @@ export class AscError extends ShipError {
     readonly status: number,
     readonly errors: AscErrorItem[],
     statusText = "",
+    hint = ascHint(status, errors),
   ) {
-    super(ascMessage(status, errors, statusText), `api-${status}`, ascHint(status, errors), { status, errors }, 1);
+    super(ascMessage(status, errors, statusText), `api-${status}`, hint, { status, errors }, 1);
   }
 }
 
@@ -269,9 +282,22 @@ function networkError(error: unknown, method: Method, path: string): ShipError {
   );
 }
 
+/** How far `date` (an HTTP Date header) is from `now`, in ms; 0 when there's no usable header. */
+export function clockSkew(date: string | null, now = Date.now()): number {
+  const apple = date ? Date.parse(date) : Number.NaN;
+  return Number.isFinite(apple) ? apple - now : 0;
+}
+
+/** "7 min ahead of" or "20 min behind" Apple's clock, for a skew from clockSkew. */
+const describeSkew = (skewMs: number) => `${Math.round(Math.abs(skewMs) / 60_000)} min ${skewMs < 0 ? "ahead of" : "behind"}`;
+
 // MARK: Requests
 
-/** Sends one request, retrying as `shouldRetry` allows. Returns undefined for an empty response (204). */
+/**
+ * Sends one request, retrying as `shouldRetry` allows. Returns undefined for
+ * an empty response (204), and for a DELETE whose retry finds the thing gone:
+ * the try before it went through and only its answer was lost.
+ */
 export async function api<A = Record<string, unknown>>(method: Method, path: string, body?: unknown): Promise<Document<A> | undefined> {
   const url = path.startsWith("http") ? path : `${BASE}${path}`;
   // Never send the token anywhere but App Store Connect, even when a `next` link says to.
@@ -280,8 +306,11 @@ export async function api<A = Record<string, unknown>>(method: Method, path: str
   }
   let attempt = 0;
   let freshToken = false;
+  /** Whether an earlier try may have done the work (a dropped answer or a server error). */
+  let mayHaveGoneThrough = false;
   while (true) {
     let response: Response;
+    let text: string;
     try {
       // Read fetch at call time, so tests can swap it.
       response = await globalThis.fetch(url, {
@@ -293,27 +322,44 @@ export async function api<A = Record<string, unknown>>(method: Method, path: str
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
+      // The body inside the try too: the timeout covers reading it, and a connection can drop halfway.
+      text = await response.text();
     } catch (error) {
       if (error instanceof ShipError) throw error;
       if (shouldRetry(method, "network") && attempt < retry.retries) {
+        mayHaveGoneThrough = true;
         await retry.sleep(retryDelay(attempt++));
         continue;
       }
       throw networkError(error, method, url);
     }
-    // A token can be rejected when the clock moved or the key was just made; sign a new one once.
-    if (response.status === 401 && !freshToken) {
-      freshToken = true;
-      await response.body?.cancel();
-      continue;
+    if (response.status === 401) {
+      // Apple refuses a token more than 20 minutes from its own clock; sign the next one in Apple's time.
+      const skew = clockSkew(response.headers.get("date"));
+      const skewed = Math.abs(skew) > CLOCK_SLACK_MS;
+      // A token can also be rejected when the key was just made; sign a new one once.
+      if (!freshToken) {
+        freshToken = true;
+        if (skewed) clock.offsetMs = skew;
+        continue;
+      }
+      if (skewed || clock.offsetMs) {
+        const off = skewed ? skew : clock.offsetMs;
+        throw new AscError(
+          401,
+          parseErrors(text),
+          response.statusText,
+          `This Mac's clock is ${describeSkew(off)} Apple's, which can make App Store Connect refuse the API key. Sync it (System Settings → General → Date & Time, or \`sudo sntp -sS time.apple.com\`), then check the key with \`ship auth status\`.`,
+        );
+      }
     }
     if (shouldRetry(method, response.status) && attempt < retry.retries) {
-      await response.body?.cancel();
+      if (response.status >= 500) mayHaveGoneThrough = true;
       await retry.sleep(retryDelay(attempt++, response.headers.get("retry-after")));
       continue;
     }
+    if (method === "DELETE" && response.status === 404 && mayHaveGoneThrough) return undefined;
     if (response.status === 204) return undefined;
-    const text = await response.text();
     if (!response.ok) throw new AscError(response.status, parseErrors(text), response.statusText);
     if (!text) return undefined;
     try {
