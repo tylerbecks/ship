@@ -3,7 +3,7 @@
 // Connect.
 
 import { relative } from "node:path";
-import { type Command, type Context, boolFlag, listFlag, stringFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags, listFlag, stringFlag } from "../command";
 import { loadProject } from "../config";
 import { changesJSON } from "../diff";
 import { parsePlatform } from "../platform";
@@ -14,8 +14,8 @@ import { ShipError, ui } from "../ui";
 import { appId } from "./status";
 
 export const screenshotsHelp = `ship screenshots pull [--version <x.y>] [--locale <code>] [--force]
-ship screenshots diff [--version <x.y>] [--locale <code>] [--exit-code]
-ship screenshots push [--version <x.y>] [--locale <code>] [--type <TYPE>] [--prune] [--dry-run]
+ship screenshots diff [--version <x.y>] [--locale <code>] [--type <TYPE>] [--prune] [--exit-code]
+ship screenshots push [--version <x.y>] [--locale <code>] [--type <TYPE>] [--prune] [--dry-run] [--no-wait]
 ship screenshots validate
 
 Keeps the App Store screenshots and app previews in the repo, next to the
@@ -35,13 +35,21 @@ file matches which upload; commit it.
   --platform <p>     ios, macos, tvos, or visionos (default: ship.json's)
   --locale <code>    Only this language; repeat for more
   --type <TYPE>      Only this display or preview type; repeat for more
-  --prune            push: delete screenshots and previews that aren't in the repo
+  --prune            push: delete screenshots and previews that aren't in the repo (diff shows it)
   --dry-run          push: show the changes without making them
   --no-wait          push: don't wait for App Store Connect to process uploads
   --force            pull: overwrite local files that differ
   --exit-code        diff: exit 1 when there are changes (for CI)`;
 
 const ACTIONS = ["pull", "diff", "push", "validate"];
+
+/** Flags only some actions take; --locale, --type, and --platform work with all of them. */
+const ACTION_FLAGS: Record<string, string[]> = {
+  pull: ["version", "force"],
+  diff: ["version", "prune", "exit-code"],
+  push: ["version", "prune", "dry-run", "no-wait"],
+  validate: [],
+};
 
 const usage = (message: string, hint: string, details?: Record<string, unknown>) => new ShipError(message, "usage", hint, details, 2);
 
@@ -175,6 +183,7 @@ export const commands: Command[] = [
     },
     run: async (ctx) => {
       const action = ctx.args[0];
+      if (ACTIONS.includes(action ?? "")) checkActionFlags(ctx, "screenshots", action!, ACTION_FLAGS);
       if (action === "pull") return pull(ctx);
       if (action === "diff") return diff(ctx);
       if (action === "push") return push(ctx);

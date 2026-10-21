@@ -3,7 +3,7 @@
 
 import { existsSync } from "node:fs";
 import { relative } from "node:path";
-import { type Command, type Context, boolFlag, listFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags, listFlag } from "../command";
 import { loadProject } from "../config";
 import { changesJSON, renderChanges } from "../diff";
 import { diffBetaInfo, pullBetaInfo, pushBetaInfo, readBetaInfo, testflightDir, validateBetaInfo } from "../store/testflight";
@@ -45,13 +45,6 @@ const ACTION_FLAGS: Record<string, string[]> = {
   validate: [],
 };
 
-/** A usage error for a flag the action doesn't take. */
-function checkFlags(ctx: Context, action: string) {
-  const all = [...new Set(Object.values(ACTION_FLAGS).flat())];
-  const extra = all.find((flag) => ctx.flags[flag] !== undefined && !ACTION_FLAGS[action]!.includes(flag));
-  if (extra) throw new ShipError(`--${extra} isn't for ${action}`, "usage", "See `ship testflight --help`.", undefined, 2);
-}
-
 export async function testflight(ctx: Context) {
   const action = ctx.args[0];
   if (!action || !ACTIONS.includes(action)) {
@@ -64,7 +57,7 @@ export async function testflight(ctx: Context) {
     );
   }
   if (ctx.args.length > 1) throw new ShipError(`ship testflight ${action} takes no other arguments`, "usage", "See `ship testflight --help`.", undefined, 2);
-  checkFlags(ctx, action);
+  checkActionFlags(ctx, "testflight", action, ACTION_FLAGS);
   const project = await loadProject({ app: ctx.app });
   const dir = testflightDir(project);
   const shown = relative(process.cwd(), dir) || ".";

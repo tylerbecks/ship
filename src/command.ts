@@ -96,6 +96,22 @@ export function listFlag(ctx: Context, name: string): string[] {
   return typeof value === "string" ? [value] : [];
 }
 
+/**
+ * Fails when a flag goes to an action that doesn't take it, so it's a usage
+ * error instead of being ignored. `takes` lists the flags only some actions
+ * take; a flag not listed works with every action.
+ */
+export function checkActionFlags(ctx: Context, command: string, action: string, takes: Record<string, string[]>): void {
+  const listed = [...new Set(Object.values(takes).flat())];
+  const extra = listed.find((flag) => ctx.flags[flag] !== undefined && ctx.flags[flag] !== false && !takes[action]?.includes(flag));
+  if (!extra) return;
+  const owners = Object.keys(takes).filter((name) => takes[name]!.includes(extra));
+  throw usage(
+    `--${extra} isn't for ship ${command} ${action}`,
+    `It works with ${owners.map((name) => `ship ${command} ${name}`).join(" and ")} (see \`ship ${command} --help\`).`,
+  );
+}
+
 // MARK: Help
 
 const SECTIONS: { section: Section; title: string }[] = [

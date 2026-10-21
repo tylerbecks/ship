@@ -46,28 +46,24 @@ async function show(app: string | undefined) {
 }
 
 async function change(app: string | undefined, action: string, value: string | undefined, dryRun: boolean) {
-  let to: string;
+  let to = "";
   let from: string | undefined;
+  // Arguments first, so a typo is a usage error even outside a set-up repo.
+  if (action === "bump" && (!value || !BUMPS.includes(value as Bump))) {
+    throw new ShipError(value ? `Can't bump "${value}"` : "Bump which part?", "usage", `Pick one: ship version bump ${BUMPS.join(" | ")}`, { choices: BUMPS }, 2);
+  }
+  if (action === "set") {
+    if (!value) throw new ShipError("Set it to what?", "usage", "For example: ship version set 1.5", undefined, 2);
+    to = checkVersion(value, "ship version set");
+  }
   const project = await loadProject({ app });
   if (action === "bump") {
-    if (!value || !BUMPS.includes(value as Bump)) {
-      throw new ShipError(
-        value ? `Can't bump "${value}"` : "Bump which part?",
-        "usage",
-        `Pick one: ship version bump ${BUMPS.join(" | ")}`,
-        { choices: BUMPS },
-        2,
-      );
-    }
     ui.step("Reading the project's version");
     from = (await projectVersion(project)).version;
     if (!from) {
       throw new ShipError("The project doesn't say its version, so there's nothing to bump", "no-marketing-version", "Set one with `ship version set 1.0`.");
     }
     to = bumpVersion(from, value as Bump);
-  } else {
-    if (!value) throw new ShipError("Set it to what?", "usage", "For example: ship version set 1.5", undefined, 2);
-    to = checkVersion(value, "ship version set");
   }
   const result = await writeProjectVersion(project, to, { from, dryRun });
   for (const warning of result.warnings) ui.warn(warning);

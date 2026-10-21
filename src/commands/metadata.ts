@@ -3,7 +3,7 @@
 // the store folder, pulled from and pushed to App Store Connect.
 
 import { existsSync } from "node:fs";
-import { type Command, type Context, boolFlag, listFlag, stringFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags, listFlag, stringFlag } from "../command";
 import { type Project, loadProject, relativeTo } from "../config";
 import { changesJSON, renderChanges } from "../diff";
 import { type Platform, parsePlatform } from "../platform";
@@ -13,8 +13,8 @@ import { ShipError, ui } from "../ui";
 import { appId } from "./status";
 
 export const metadataHelp = `ship metadata pull [--version <x.y>] [--locale <code>] [--force]
-ship metadata diff [--version <x.y>] [--exit-code]
-ship metadata push [--version <x.y>] [--dry-run] [--partial] [--prune]
+ship metadata diff [--version <x.y>] [--locale <code>] [--prune] [--exit-code]
+ship metadata push [--version <x.y>] [--locale <code>] [--dry-run] [--partial] [--prune]
 ship metadata validate
 
 Keeps the App Store page in the repo: the name, subtitle, description,
@@ -44,10 +44,18 @@ keychain:ship/lift-demo-password (see \`ship secret --help\`).
   --force           pull: overwrite local files that differ
   --dry-run         push: show the changes without making them
   --partial         push: apply what can change now, skip the rest
-  --prune           push: delete languages that have no folder
+  --prune           push: delete languages that have no folder (diff shows it)
   --exit-code       diff: exit 1 when there are changes (for CI)`;
 
 const ACTIONS = ["pull", "diff", "push", "validate"];
+
+/** Flags only some actions take (validate reads the whole folder, offline). */
+const ACTION_FLAGS: Record<string, string[]> = {
+  pull: ["version", "locale", "platform", "force"],
+  diff: ["version", "locale", "platform", "prune", "exit-code"],
+  push: ["version", "locale", "platform", "dry-run", "partial", "prune"],
+  validate: [],
+};
 
 interface Options {
   app?: string;
@@ -189,7 +197,7 @@ async function validate(project: Project): Promise<boolean> {
 export async function metadata(action: string | undefined, options: Options): Promise<{ failed: boolean }> {
   if (!action || !ACTIONS.includes(action)) {
     throw new ShipError(
-      action ? `Unknown action "${action}"` : "Pick an action: pull, diff, push, or validate",
+      action ? `Unknown metadata action "${action}"` : "Pick an action: pull, diff, push, or validate",
       "usage",
       `ship metadata ${ACTIONS.join(" | ")} (see \`ship metadata --help\`)`,
       { choices: ACTIONS },
@@ -236,6 +244,7 @@ export const commands: Command[] = [
       "exit-code": { type: "boolean" },
     },
     run: async (ctx) => {
+      if (ACTIONS.includes(ctx.args[0] ?? "")) checkActionFlags(ctx, "metadata", ctx.args[0]!, ACTION_FLAGS);
       const { failed } = await metadata(ctx.args[0], options(ctx));
       if (failed) process.exitCode = 1;
     },

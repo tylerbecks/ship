@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import pkg from "../package.json";
-import { type Command, type Context, boolFlag, findCommand, indexLine, intFlag, listFlag, parseFlags, renderIndex, stringFlag } from "../src/command";
+import { type Command, type Context, boolFlag, checkActionFlags, findCommand, indexLine, intFlag, listFlag, parseFlags, renderIndex, stringFlag } from "../src/command";
 import { commands } from "../src/commands";
 
 /** `ship --help` before the registry, minus its first line (which has the version). */
@@ -121,5 +121,22 @@ describe("flags", () => {
       expect(error).toMatchObject({ code: "usage", exitCode: 2 });
       expect(error?.hint).toBe("For example: --limit 10");
     }
+  });
+});
+
+describe("checkActionFlags", () => {
+  const takes = { pull: ["force"], push: ["dry-run", "prune"], diff: ["prune"], validate: [] };
+
+  test("a flag for another action is a usage error naming where it works", () => {
+    expect(usageError(() => checkActionFlags(ctx({ force: true }), "metadata", "push", takes))).toEqual({
+      code: "usage",
+      exitCode: 2,
+      hint: "It works with ship metadata pull (see `ship metadata --help`).",
+    });
+    expect(usageError(() => checkActionFlags(ctx({ prune: true }), "metadata", "validate", takes))?.hint).toContain("ship metadata push and ship metadata diff");
+  });
+
+  test("the action's own flags, and flags no action lists, pass", () => {
+    expect(() => checkActionFlags(ctx({ "dry-run": true, prune: true, json: true, locale: ["en-US"] }), "metadata", "push", takes)).not.toThrow();
   });
 });
