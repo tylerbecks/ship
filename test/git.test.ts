@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/exec";
 import { checkCommit } from "../src/commands/beta";
-import { buildCommits, describeSince, fetchBuildTags, headCommit, sinceBuild, tagBuild } from "../src/git";
+import { buildCommits, describeSince, drift, porcelainLines, fetchBuildTags, headCommit, sinceBuild, tagBuild } from "../src/git";
 
 const temp = () => mkdtempSync(join(tmpdir(), "ship-git-"));
 
@@ -126,6 +126,29 @@ describe("checkCommit", () => {
     expect(code(() => checkCommit(undefined, false))).toBe("no-commit");
     expect(code(() => checkCommit({ ...clean, changes: [" M a"] }, true))).toBeUndefined();
     expect(code(() => checkCommit(undefined, true))).toBeUndefined();
+  });
+});
+
+test("porcelainLines keeps paths with spaces whole and drops a rename's original path", () => {
+  expect(porcelainLines(" M My App.swiftpm/Package.swift\0R  new.swift\0old.swift\0?? notes.md\0")).toEqual([
+    " M My App.swiftpm/Package.swift",
+    "R  new.swift",
+    "?? notes.md",
+  ]);
+});
+
+describe("drift", () => {
+  const before = { sha: "aaaaaaa111", short: "aaaaaaa", changes: [] };
+
+  test("allows an unchanged checkout and the files the build rewrites", () => {
+    expect(drift(before, before)).toBeUndefined();
+    expect(drift(before, { ...before, changes: [" M App.swiftpm/Package.swift"] }, ["App.swiftpm/Package.swift"])).toBeUndefined();
+  });
+
+  test("names a moved HEAD and new changes", () => {
+    expect(drift(before, { ...before, sha: "bbbbbbb222", short: "bbbbbbb" })).toBe("HEAD moved from aaaaaaa to bbbbbbb");
+    expect(drift(before, { ...before, changes: [" M src/a.swift", "?? src/b.swift"] })).toBe("changed: src/a.swift, src/b.swift");
+    expect(drift(before, undefined)).toBe("HEAD can't be read anymore");
   });
 });
 

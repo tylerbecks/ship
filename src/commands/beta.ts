@@ -1,3 +1,4 @@
+import { join, relative } from "node:path";
 import {
   type Build,
   addBuildToGroup,
@@ -9,9 +10,9 @@ import {
   submitForBetaReview,
 } from "../asc/api";
 import { archive, checkInfo, exportIPA, ipaInfo, upload, withKeyFile } from "../build";
-import { type Project, loadProject } from "../config";
+import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
-import { type Commit, type Tagging, commitSetting, headCommit, tagBuild, tagFor } from "../git";
+import { type Commit, type Tagging, commitSetting, drift, headCommit, tagBuild, tagFor } from "../git";
 import { ShipError, ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
 import { appId, friendly } from "./status";
@@ -105,6 +106,18 @@ export async function beta(options: BetaOptions) {
       if (blocking.length) {
         throw new ShipError("The built app doesn't match what ship expected", "bad-build", blocking.map((c) => c.message).join("\n  "));
       }
+      // The archive read the checkout over several minutes; another session committing or editing in
+      // it meanwhile would make the tag name a commit the build doesn't match.
+      if (tagged) {
+        const changed = drift(commit, await headCommit(project.root), await rewrittenPaths(project));
+        if (changed) {
+          throw new ShipError(
+            `The checkout changed while archiving (${changed})`,
+            "checkout-changed",
+            "Nothing was uploaded. Once those changes are committed or gone, run ship beta again.",
+          );
+        }
+      }
 
       ui.step("Uploading to App Store Connect");
       await upload(project, build, ipa, creds, key!);
@@ -122,6 +135,12 @@ export async function beta(options: BetaOptions) {
 
   const result = await distribute(project, id, build, options);
   ui.result({ plan, tag, ...result }, () => printDistribution(project, build, result));
+}
+
+/** Files the archive itself rewrites: an App Playground's Package.swift gets the build number. */
+async function rewrittenPaths(project: Project): Promise<string[]> {
+  if (project.config.kind !== "swiftpm") return [];
+  return [relative(await repoRoot(project.root), join(project.projectPath, "Package.swift"))];
 }
 
 /** Stops an upload that no commit could describe (uncommitted changes, or no commit at all) unless --allow-dirty. */

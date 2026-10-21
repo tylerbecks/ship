@@ -32,17 +32,30 @@ export async function headCommit(root: string): Promise<Commit | undefined> {
   const sha = head.stdout.trim();
   const [branch, status, defaultBranch] = await Promise.all([
     git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
-    git(root, ["status", "--porcelain"]),
+    git(root, ["status", "--porcelain", "-z"]),
     remoteDefaultBranch(root),
   ]);
   return {
     sha,
     short: sha.slice(0, 7),
     branch: branch.code === 0 ? branch.stdout.trim() : undefined,
-    changes: status.stdout.split("\n").filter(Boolean),
+    changes: porcelainLines(status.stdout),
     defaultBranch,
     onDefaultBranch: defaultBranch ? await contains(root, defaultBranch, sha) : undefined,
   };
+}
+
+/** `git status --porcelain -z` as "XY path" lines, unquoted (so "My App.swiftpm" stays as is). */
+export function porcelainLines(output: string): string[] {
+  const fields = output.split("\0").filter(Boolean);
+  const lines: string[] = [];
+  for (let i = 0; i < fields.length; i++) {
+    const line = fields[i]!;
+    lines.push(line);
+    // A rename or copy is followed by its original path.
+    if (/^[RC]|^.[RC]/.test(line)) i++;
+  }
+  return lines;
 }
 
 async function remoteDefaultBranch(root: string): Promise<string | undefined> {
@@ -137,6 +150,19 @@ export function describeSince(since: Since): string {
   if (!since.onBranch) return `Newest tagged ${build} came from a commit that isn't on ${since.branch}.`;
   if (since.commits === 0) return `Newest tagged ${build} is up to date with ${since.branch}.`;
   return `${since.branch} has ${since.commits} commit${since.commits === 1 ? "" : "s"} since ${build}: git log --oneline ${since.commit.slice(0, 7)}..${since.branch}`;
+}
+
+/**
+ * Why the checkout no longer matches `before` (HEAD moved, or files changed), or undefined when it
+ * still does. `rewritten` lists repo-relative paths the build itself rewrites.
+ */
+export function drift(before: Commit, after: Commit | undefined, rewritten: string[] = []): string | undefined {
+  if (!after) return "HEAD can't be read anymore";
+  if (after.sha !== before.sha) return `HEAD moved from ${before.short} to ${after.short}`;
+  // Porcelain lines are "XY path", with paths relative to the repo root.
+  const changed = after.changes.filter((line) => !before.changes.includes(line) && !rewritten.includes(line.slice(3)));
+  if (changed.length) return `changed: ${changed.slice(0, 5).map((line) => line.slice(3)).join(", ")}`;
+  return undefined;
 }
 
 /** The SHIP_COMMIT build setting: the commit, marked when the build has uncommitted changes. */
