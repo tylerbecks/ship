@@ -1099,5 +1099,14 @@ describe("ship release and ship version arguments", () => {
     expect(unknown.exitCode).toBe(2);
     expect(unknown.details?.choices).toEqual(["status", "prepare", "submit", "go", "cancel", "phased"]);
     expect((await run("version", ["grow"])).details?.choices).toEqual(["bump", "set"]);
+    expect((await run("version", ["bump", "huge"])).details?.choices).toEqual(["major", "minor", "patch"]);
+    expect((await run("version", ["set"])).exitCode).toBe(2);
+  });
+
+  test("a flag for another action is a usage error", async () => {
+    const error = await run("release", ["go"], { build: "3" });
+    expect(error).toMatchObject({ code: "usage", exitCode: 2 });
+    expect(error.hint).toContain("ship release prepare and ship release submit");
+    expect((await run("release", ["status"], { push: true })).code).toBe("usage");
   });
 });

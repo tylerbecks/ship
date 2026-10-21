@@ -45,7 +45,7 @@ import {
 } from "../asc/release";
 import { type AppStoreVersion, LIVE_VERSION_STATES, appInfos, appStoreVersions, editableAppInfo, liveAppInfo, pickVersion } from "../asc/versions";
 import { checkBuildNumber } from "../build";
-import { type Command, type Context, boolFlag, stringFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags, stringFlag } from "../command";
 import { type Project, loadProject } from "../config";
 import { type AscPlatform, fromAscPlatform, parsePlatform, platformInfo } from "../platform";
 import { type PushResult, type StoreApp, readStoreApp } from "../store/files";
@@ -58,9 +58,9 @@ import { appId } from "./status";
 export const releaseHelp = `ship release [status] [--version <x.y>]
 ship release prepare [--version <x.y>] [--build <n>] [--push] [--release <when>] [--phased | --no-phased] [--rename]
 ship release submit [the same flags] [--dry-run]
-ship release go [--version <x.y>]
-ship release cancel [--version <x.y>]
-ship release phased pause|resume|complete [--version <x.y>]
+ship release go [--version <x.y>] [--dry-run]
+ship release cancel [--version <x.y>] [--dry-run]
+ship release phased pause|resume|complete [--version <x.y>] [--dry-run]
 
 Ships a version to the App Store:
   prepare  creates the version (or reuses the one being prepared), attaches
@@ -809,11 +809,22 @@ function releaseOptions(ctx: Context): ReleaseOptions {
   };
 }
 
+/** Flags only some actions take; --version and --platform work with all of them. */
+const ACTION_FLAGS: Record<string, string[]> = {
+  status: [],
+  prepare: ["build", "push", "release", "phased", "no-phased", "rename", "dry-run"],
+  submit: ["build", "push", "release", "phased", "no-phased", "rename", "dry-run"],
+  go: ["dry-run"],
+  cancel: ["dry-run"],
+  phased: ["dry-run"],
+};
+
 async function release(ctx: Context) {
   const action = ctx.args[0] ?? "status";
   if (!ACTIONS.includes(action)) {
     throw new ShipError(`Unknown release action "${action}"`, "usage", `Pick one: ship release ${ACTIONS.join(" | ")}`, { choices: ACTIONS }, 2);
   }
+  checkActionFlags(ctx, "release", action, ACTION_FLAGS);
   const options = releaseOptions(ctx);
   const project = await loadProject({ app: ctx.app });
   switch (action) {
