@@ -47,9 +47,10 @@ export function checkKeychainName(value: string, what: "service" | "account") {
 
 /**
  * `security find-generic-password -w` prints a password with non-printable
- * characters (a .p8 key's newlines, say) as hex. Decodes that, and leaves a
- * password that's only printable characters alone, since `security` would
- * have printed that one as is.
+ * characters (a .p8 key's newlines, say) as hex. Decodes that, but only when
+ * the decoded text has a line break or a non-ASCII character, as the values
+ * ship saves do (keys, UTF-8 passwords). A password made of hex digits that
+ * decodes to anything else (2009 is " \t") is the password itself.
  */
 export function decodePassword(stdout: string): string {
   const value = stdout.replace(/\r?\n$/, "");
@@ -60,24 +61,24 @@ export function decodePassword(stdout: string): string {
   } catch {
     return value;
   }
-  const printable = /^[\x20-\x7e]*$/.test(decoded);
   const text = /^[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]*$/.test(decoded);
-  return !printable && text ? decoded : value;
+  const needsHex = /[\n\r]|[^\x00-\x7f]/.test(decoded);
+  return text && needsHex ? decoded : value;
 }
 
 /** A generic password's value, or undefined when there's no such item. */
-export async function readGenericPassword(service: string, account?: string): Promise<string | undefined> {
+export async function readGenericPassword(service: string, account: string): Promise<string | undefined> {
   checkKeychainName(service, "service");
-  if (account !== undefined) checkKeychainName(account, "account");
-  const result = await security.run(["find-generic-password", "-s", service, ...(account !== undefined ? ["-a", account] : []), "-w"]);
+  checkKeychainName(account, "account");
+  const result = await security.run(["find-generic-password", "-s", service, "-a", account, "-w"]);
   return result.code === 0 ? decodePassword(result.stdout) : undefined;
 }
 
 /** Whether an item exists, without reading its value (so no Keychain prompt). */
-export async function hasGenericPassword(service: string, account?: string): Promise<boolean> {
+export async function hasGenericPassword(service: string, account: string): Promise<boolean> {
   checkKeychainName(service, "service");
-  if (account !== undefined) checkKeychainName(account, "account");
-  const result = await security.run(["find-generic-password", "-s", service, ...(account !== undefined ? ["-a", account] : [])]);
+  checkKeychainName(account, "account");
+  const result = await security.run(["find-generic-password", "-s", service, "-a", account]);
   return result.code === 0;
 }
 

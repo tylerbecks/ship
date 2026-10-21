@@ -5,9 +5,8 @@ import { bearerToken } from "../asc/client";
 import { type Command, boolFlag, stringFlag } from "../command";
 import { loadSettings, saveSettings, settingsPath } from "../config";
 import { type Credentials, credentialSources, credentials, resolveValue, serviceAccountToken, useCredentials } from "../credentials";
-import { run } from "../exec";
 import { cacheExpiry, checkKeychainName, clearCached, clearServiceAccountToken, writeGenericPassword, writeServiceAccountToken } from "../keychain";
-import { normalizePrivateKey } from "../secrets";
+import { normalizePrivateKey, opFailed, runOp } from "../secrets";
 import { ShipError, ui } from "../ui";
 
 export const authHelp = `ship auth set --key-id <id> --issuer-id <id> --private-key <ref> [--keychain] [--op-account <account>]
@@ -145,14 +144,12 @@ async function serviceAccount(ref: string | undefined) {
   const settings = await loadSettings();
   // Read the token as yourself, not with whatever token is already saved.
   ui.step("Reading the token from 1Password");
-  const read = await run(["op", "read", ...(settings.opAccount ? ["--account", settings.opAccount] : []), ref], {
-    env: { OP_SERVICE_ACCOUNT_TOKEN: undefined },
-  });
-  if (read.code !== 0) throw new ShipError(`Couldn't read ${ref} from 1Password`, "op-failed", read.stderr.trim());
+  const read = await runOp(["read", ref], { what: `read ${ref}`, account: settings.opAccount });
+  if (read.code !== 0) throw opFailed(`Couldn't read ${ref} from 1Password`, read, "Is the 1Password CLI signed in (`op signin`)? Check the reference, or use the item's ID.");
   const token = read.stdout.trim();
-  const whoami = await run(["op", "whoami", "--format", "json"], { env: { OP_SERVICE_ACCOUNT_TOKEN: token } });
+  const whoami = await runOp(["whoami", "--format", "json"], { what: "check the token", token });
   if (whoami.code !== 0) {
-    throw new ShipError("1Password didn't accept that token", "bad-token", whoami.stderr.trim() || "Is it a service account token (starts with ops_)?");
+    throw new ShipError("1Password didn't accept that token", "bad-token", [whoami.stderr.trim(), "Is it a service account token (starts with ops_)?"].filter(Boolean).join(" "));
   }
   if (!(await writeServiceAccountToken(token))) {
     throw new ShipError("Couldn't save the token to the Keychain", "keychain-failed", "Is the login Keychain unlocked? Try again.");

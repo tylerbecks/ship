@@ -71,9 +71,6 @@ export async function secretSet(ref: string | undefined, options: { stdin?: bool
   }
   const parsed = parseKeychainRef(ref);
   if (!parsed) throw badKeychainRef(ref);
-  if (!parsed.account) {
-    throw new ShipError(`${ref} needs an account`, "usage", `Write it as keychain:${parsed.service}/<account>, like keychain:ship/lift-demo-password.`, undefined, 2);
-  }
   const value = await readInput(options, ref);
   if (!(await writeGenericPassword(parsed.service, parsed.account, value, `ship: ${parsed.account}`))) {
     throw new ShipError(`Couldn't save ${ref} to the Keychain`, "keychain-failed", "Is the login Keychain unlocked? Try again.");

@@ -1,7 +1,7 @@
 // Offline checks for store files, shared by every `validate`: lengths the
 // way Apple counts them, URLs, emails, and passwords that must be references.
 
-import { isSecretReference } from "../secrets";
+import { badKeychainRef, isSecretReference, parseKeychainRef } from "../secrets";
 
 /** Something wrong (error) or worth a look (warning) in a store file. */
 export interface Problem {
@@ -41,4 +41,11 @@ export function passwordProblem(file: string, field: string, value: string | nul
     severity: "error",
     message: `${field} is a password in plain text. Save it with \`ship secret set keychain:ship/<name> --stdin\` and write "keychain:ship/<name>" here instead.`,
   };
+}
+
+/** A problem when a password's keychain: reference doesn't parse: keychain:<service> alone would send whichever item comes first. */
+export function referenceProblem(file: string, field: string, value: string | null | undefined): Problem | undefined {
+  if (!value?.startsWith("keychain:") || parseKeychainRef(value)) return undefined;
+  const bad = badKeychainRef(value);
+  return { file, field, severity: "error", message: `${field}: ${bad.message}. ${bad.hint}` };
 }

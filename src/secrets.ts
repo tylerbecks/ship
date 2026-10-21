@@ -10,7 +10,7 @@
 
 import { homedir } from "node:os";
 import { settingsPath } from "./config";
-import { NOT_FOUND, run } from "./exec";
+import { NOT_FOUND, type RunResult, run } from "./exec";
 import { KEYCHAIN_NAME, readGenericPassword, readServiceAccountToken } from "./keychain";
 import { ShipError } from "./ui";
 
@@ -39,35 +39,48 @@ export async function serviceAccountToken(): Promise<string | undefined> {
   return process.env.OP_SERVICE_ACCOUNT_TOKEN || (await readServiceAccountToken());
 }
 
+/**
+ * Runs `op` the one way ship does. With a service account token, `op` uses
+ * it (no Touch ID) and the token picks its own account; without one, it runs
+ * as you, with --account when you have more than one. A missing `op` is an
+ * op-missing error; `what` ("read op://…") says what ship was doing.
+ */
+export async function runOp(args: string[], options: { what: string; token?: string; account?: string }): Promise<RunResult> {
+  const [command = "", ...rest] = args;
+  const account = options.account && !options.token ? ["--account", options.account] : [];
+  // No token means none at all, not one left in the environment.
+  const result = await tools.op([command, ...account, ...rest], { OP_SERVICE_ACCOUNT_TOKEN: options.token || undefined });
+  if (result.code === NOT_FOUND) {
+    throw new ShipError(
+      `Couldn't ${options.what}: the 1Password CLI isn't installed`,
+      "op-missing",
+      "Install it (brew install 1password-cli) and turn on its desktop app integration, or keep the secret in the Keychain instead (see `ship secret --help`).",
+    );
+  }
+  return result;
+}
+
+/** An op-failed error with what `op` said, then `hint`. */
+export const opFailed = (message: string, result: RunResult, hint: string) =>
+  new ShipError(message, "op-failed", [result.stderr.trim(), hint].filter(Boolean).join(" "));
+
 const onePassword: SecretSource = {
   name: "1Password",
   matches: (value) => value.startsWith("op://"),
   async resolve(value, { opAccount }) {
     // A service account token (from the environment, or the one `ship auth
-    // service-account` saved) reads without Touch ID and picks its own account.
+    // service-account` saved) reads without Touch ID.
     const token = await serviceAccountToken();
-    const account = opAccount && !token ? ["--account", opAccount] : [];
-    const result = await tools.op(["read", ...account, value], token ? { OP_SERVICE_ACCOUNT_TOKEN: token } : {});
-    if (result.code === NOT_FOUND) {
-      throw new ShipError(
-        `Couldn't read ${value}: the 1Password CLI isn't installed`,
-        "op-missing",
-        "Install it (brew install 1password-cli) and turn on its desktop app integration, or keep the secret in the Keychain instead (see `ship secret --help`).",
-      );
-    }
+    const result = await runOp(["read", value], { what: `read ${value}`, token, account: opAccount });
     if (result.code !== 0) {
-      throw new ShipError(
+      throw opFailed(
         `Couldn't read ${value} from 1Password`,
-        "op-failed",
-        [
-          result.stderr.trim(),
+        result,
+        `${
           token
             ? "ship reads 1Password with a service account: check it can see this vault, or save a new token with `ship auth service-account <op://ref>` (or `ship auth service-account remove`)."
-            : "Is the 1Password CLI signed in?",
-          `Check the reference in ${settingsPath}.`,
-        ]
-          .filter(Boolean)
-          .join(" "),
+            : "Is the 1Password CLI signed in?"
+        } Check the reference in ${settingsPath}.`,
       );
     }
     return result.stdout.trim();
@@ -76,24 +89,33 @@ const onePassword: SecretSource = {
 
 // MARK: Keychain
 
-/** keychain:<service> or keychain:<service>/<account>, or undefined when the value isn't a valid one. */
-export function parseKeychainRef(value: string): { service: string; account?: string } | undefined {
+/**
+ * keychain:<service>/<account>, or undefined when the value isn't a valid
+ * one. The account is required: a service alone matches whichever item comes
+ * first, and under "ship" that could be ship's own copy of the API key or the
+ * 1Password token.
+ */
+export function parseKeychainRef(value: string): { service: string; account: string } | undefined {
   if (!value.startsWith("keychain:")) return undefined;
   const rest = value.slice("keychain:".length);
   const slash = rest.indexOf("/");
-  const service = slash < 0 ? rest : rest.slice(0, slash);
-  const account = slash < 0 ? undefined : rest.slice(slash + 1);
-  if (!KEYCHAIN_NAME.test(service)) return undefined;
-  if (account !== undefined && !KEYCHAIN_NAME.test(account)) return undefined;
+  if (slash < 0) return undefined;
+  const service = rest.slice(0, slash);
+  const account = rest.slice(slash + 1);
+  if (!KEYCHAIN_NAME.test(service) || !KEYCHAIN_NAME.test(account)) return undefined;
   return { service, account };
 }
 
 /** A usage error for a keychain: reference that doesn't parse. */
 export function badKeychainRef(value: string): ShipError {
+  const service = value.slice("keychain:".length);
+  const noAccount = KEYCHAIN_NAME.test(service);
   return new ShipError(
-    `"${value}" isn't a Keychain reference`,
+    noAccount ? `${value} needs an account` : `"${value}" isn't a Keychain reference`,
     "usage",
-    "Write it as keychain:<service>/<account> (letters, digits, and . _ @ - only), like keychain:ship/lift-demo-password.",
+    noAccount
+      ? `Write it as keychain:${service}/<account>, like keychain:ship/lift-demo-password.`
+      : "Write it as keychain:<service>/<account> (letters, digits, and . _ @ - only), like keychain:ship/lift-demo-password.",
     undefined,
     2,
   );
@@ -110,7 +132,7 @@ const keychainSource: SecretSource = {
       throw new ShipError(
         `No Keychain item for ${value}`,
         "keychain-missing",
-        `Save it with \`ship secret set ${ref.account ? value : `${value}/<account>`} --stdin\` (or --from-file <path>), or check the name in Keychain Access.`,
+        `Save it with \`ship secret set ${value} --stdin\` (or --from-file <path>), or check the name in Keychain Access.`,
       );
     }
     return secret;

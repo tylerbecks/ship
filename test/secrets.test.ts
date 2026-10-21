@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { saveSettings } from "../src/config";
 import { credentialSources, credentials, useCredentials } from "../src/credentials";
 import { checkKeychainName, decodePassword, readGenericPassword, writeGenericPassword } from "../src/keychain";
-import { expandHome, isSecretReference, normalizePrivateKey, parseKeychainRef, resolveSecret, sourceOf, tools } from "../src/secrets";
+import { expandHome, isSecretReference, normalizePrivateKey, opFailed, parseKeychainRef, resolveSecret, runOp, sourceOf, tools } from "../src/secrets";
 import { fakeKeychain, generateKey, temp } from "./helpers";
 
 const error = async (promise: Promise<unknown>) => {
@@ -17,10 +18,12 @@ const error = async (promise: Promise<unknown>) => {
 };
 
 describe("references", () => {
-  test("parseKeychainRef reads a service and an optional account", () => {
+  test("parseKeychainRef reads a service and an account, which it requires", () => {
     expect(parseKeychainRef("keychain:ship/lift-demo-password")).toEqual({ service: "ship", account: "lift-demo-password" });
-    expect(parseKeychainRef("keychain:com.example.app")).toEqual({ service: "com.example.app", account: undefined });
     expect(parseKeychainRef("keychain:ship/a@b.c_d-e")).toEqual({ service: "ship", account: "a@b.c_d-e" });
+    // A service alone would match whichever item comes first, like ship's own copy of the API key.
+    expect(parseKeychainRef("keychain:ship")).toBeUndefined();
+    expect(parseKeychainRef("keychain:com.example.app")).toBeUndefined();
     for (const bad of ["keychain:", "keychain:/x", "keychain:a/", "keychain:a b/c", "keychain:a/b/c", 'keychain:a"/b', "keychain:a;rm/b", "op://x"]) {
       expect(parseKeychainRef(bad)).toBeUndefined();
     }
@@ -79,16 +82,36 @@ describe("resolving", () => {
       calls.push({ args, env });
       return { code: 0, stdout: "value\n", stderr: "" };
     };
-    process.env.OP_SERVICE_ACCOUNT_TOKEN = "ops_test";
+    // No token anywhere: `op` runs as you, in the account you named.
+    const keychain = fakeKeychain();
     try {
       expect(await resolveSecret("op://Private/ASC/key-id", { opAccount: "me" })).toBe("value");
-      expect(calls[0]).toEqual({ args: ["read", "op://Private/ASC/key-id"], env: { OP_SERVICE_ACCOUNT_TOKEN: "ops_test" } });
+      expect(calls[0]!.args).toEqual(["read", "--account", "me", "op://Private/ASC/key-id"]);
+      expect(calls[0]!.env.OP_SERVICE_ACCOUNT_TOKEN).toBeUndefined();
+
+      process.env.OP_SERVICE_ACCOUNT_TOKEN = "ops_test";
+      expect(await resolveSecret("op://Private/ASC/key-id", { opAccount: "me" })).toBe("value");
+      expect(calls[1]).toEqual({ args: ["read", "op://Private/ASC/key-id"], env: { OP_SERVICE_ACCOUNT_TOKEN: "ops_test" } });
+
       tools.op = async () => ({ code: 1, stdout: "", stderr: "[ERROR] not found" });
       const failed = await error(resolveSecret("op://Private/ASC/nope"));
       expect(failed.code).toBe("op-failed");
       expect(failed.hint).toContain("[ERROR] not found");
+
+      tools.op = async () => ({ code: 127, stdout: "", stderr: "op: command not found" });
+      const missing = await error(resolveSecret("op://Private/ASC/key-id"));
+      expect(missing.code).toBe("op-missing");
+      expect(missing.hint).toContain("brew install 1password-cli");
+
+      // Failing with nothing on stderr still says what to do.
+      tools.op = async () => ({ code: 1, stdout: "", stderr: "" });
+      const quiet = await error(runOp(["read", "x"], { what: "read x" }).then((result) => {
+        throw opFailed("Couldn't read x", result, "Is the 1Password CLI signed in?");
+      }));
+      expect(quiet.hint).toBe("Is the 1Password CLI signed in?");
     } finally {
       tools.op = original;
+      keychain.restore();
       delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
     }
   });
@@ -110,7 +133,8 @@ describe("the Keychain", () => {
 
   test("keychain: references read the item, and say how to save a missing one", async () => {
     expect(await resolveSecret("keychain:ship/demo")).toBe("hunter2");
-    expect(await resolveSecret("keychain:ship")).toBe("hunter2");
+    // Without an account it's a usage error, never the first item under "ship".
+    expect(await error(resolveSecret("keychain:ship"))).toMatchObject({ code: "usage", exitCode: 2, message: "keychain:ship needs an account" });
     const missing = await error(resolveSecret("keychain:ship/other"));
     expect(missing.code).toBe("keychain-missing");
     expect(missing.hint).toContain("ship secret set keychain:ship/other --stdin");
@@ -129,6 +153,13 @@ describe("the Keychain", () => {
     // All hex digits, but printable when decoded, so `security` would have printed it as is.
     expect(decodePassword("41424344")).toBe("41424344");
     expect(decodePassword("deadbeef")).toBe("deadbeef");
+    // All digits that decode to text with a tab: still the password itself.
+    expect(decodePassword("2009\n")).toBe("2009");
+    expect(decodePassword("4509\n")).toBe("4509");
+    // A UTF-8 password and a key come back decoded.
+    expect(decodePassword(`${Buffer.from("pässword").toString("hex")}\n`)).toBe("pässword");
+    const pem = "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----";
+    expect(decodePassword(`${Buffer.from(pem).toString("hex")}\n`)).toBe(pem);
   });
 });
 
@@ -138,6 +169,35 @@ describe("credentials", () => {
     for (const name of Object.keys(process.env)) if (name.startsWith("SHIP_ASC_")) delete process.env[name];
     Object.assign(process.env, Object.fromEntries(Object.entries(saved).filter(([name]) => name.startsWith("SHIP_ASC_"))));
     useCredentials(undefined);
+  });
+
+  test("requests that start together read 1Password once", async () => {
+    const original = tools.op;
+    const reads: string[] = [];
+    tools.op = async (args) => {
+      reads.push(args.at(-1)!);
+      await Bun.sleep(5);
+      return { code: 0, stdout: args.at(-1)!.endsWith("key") ? pem : "id\n", stderr: "" };
+    };
+    const { pem } = await generateKey();
+    const keychain = fakeKeychain();
+    await saveSettings({ credentials: { keyId: "op://V/ASC/id", issuerId: "op://V/ASC/issuer", privateKey: "op://V/ASC/key" }, cacheDays: 0 });
+    useCredentials(undefined);
+    try {
+      const all = await Promise.all([credentials(), credentials(), credentials()]);
+      expect(reads).toEqual(["op://V/ASC/id", "op://V/ASC/issuer", "op://V/ASC/key"]);
+      expect(all[0]).toBe(all[2]);
+      // A failed read isn't kept: the next call tries again.
+      useCredentials(undefined);
+      tools.op = async () => ({ code: 1, stdout: "", stderr: "locked" });
+      expect(await error(credentials())).toMatchObject({ code: "op-failed" });
+      tools.op = async () => ({ code: 0, stdout: "again\n", stderr: "" });
+      expect((await credentials()).keyId).toBe("again");
+    } finally {
+      tools.op = original;
+      keychain.restore();
+      await saveSettings({});
+    }
   });
 
   test("CI variables work with a key whose newlines are \\n", async () => {

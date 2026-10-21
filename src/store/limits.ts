@@ -3,7 +3,7 @@
 // too-long subtitle or a plaintext password offline. Everything here is
 // pure: the reading happens in store/metadata.ts.
 
-import { type Problem, bytes, chars, isEmail, isHttpUrl, passwordProblem } from "./check";
+import { type Problem, bytes, chars, isEmail, isHttpUrl, passwordProblem, referenceProblem } from "./check";
 import { APP_KEYS, ASC_LOCALES, CATEGORY_KEYS, RELEASE_KEYS, REVIEW_KEYS, isObject } from "./files";
 
 // MARK: Files
@@ -263,6 +263,8 @@ function checkReview(value: unknown): Problem[] {
   if (isText(password)) {
     const plain = passwordProblem("app.json", "review.demoAccountPassword", password as string);
     if (plain) problems.push({ ...plain, code: PLAINTEXT_SECRET } as Problem);
+    const reference = referenceProblem("app.json", "review.demoAccountPassword", password as string);
+    if (reference) problems.push(reference);
   }
   if (value.demoAccountRequired === true) {
     if (!value.demoAccountName && value.demoAccountName !== undefined) {

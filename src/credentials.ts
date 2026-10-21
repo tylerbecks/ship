@@ -16,7 +16,9 @@ export interface Credentials {
   privateKey: string;
 }
 
+/** The credentials once read, and the read in flight, so concurrent requests share one. */
 let cached: Credentials | undefined;
+let pending: Promise<Credentials> | undefined;
 
 /** Whether any of the settings' references read 1Password (which is what the Keychain copy saves asking). */
 export const usesOnePassword = (references: Record<string, unknown> | undefined) =>
@@ -28,8 +30,20 @@ export const usesOnePassword = (references: Record<string, unknown> | undefined)
  * otherwise from ~/.config/ship/config.json, whose values can be references
  * to the Keychain, 1Password, the environment, or a file.
  */
-export async function credentials(): Promise<Credentials> {
-  if (cached) return cached;
+export function credentials(): Promise<Credentials> {
+  if (cached) return Promise.resolve(cached);
+  // Requests start in parallel; without this each would ask 1Password (and Touch ID) on its own.
+  if (!pending) {
+    const loading = load();
+    pending = loading;
+    loading.catch(() => {
+      if (pending === loading) pending = undefined;
+    });
+  }
+  return pending;
+}
+
+async function load(): Promise<Credentials> {
   const env = process.env;
   const settings = await loadSettings();
   const fromEnv = Boolean(env.SHIP_ASC_KEY_ID || env.SHIP_ASC_PRIVATE_KEY || env.SHIP_ASC_PRIVATE_KEY_PATH);
@@ -67,6 +81,7 @@ export async function credentials(): Promise<Credentials> {
 /** Uses these credentials for the rest of the process instead of reading them (tests; undefined forgets them). */
 export function useCredentials(creds: Credentials | undefined) {
   cached = creds;
+  pending = undefined;
 }
 
 /** Whether a key is configured, without reading any secrets. */

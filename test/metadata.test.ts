@@ -252,6 +252,10 @@ describe("validate", () => {
     for (const reference of ["keychain:ship/demo", "op://Private/Lift/password", "env:DEMO_PASSWORD", "file:~/demo.txt"]) {
       expect(checkAppJson(JSON.stringify({ review: { demoAccountRequired: true, demoAccountName: "a@example.com", demoAccountPassword: reference } }))).toEqual([]);
     }
+    // A Keychain service without an account could resolve to ship's own API key.
+    expect(checkAppJson(JSON.stringify({ review: { demoAccountPassword: "keychain:ship" } }))).toMatchObject([
+      { severity: "error", field: "review.demoAccountPassword", message: expect.stringContaining("needs an account") },
+    ]);
     // Leaving the password out keeps App Store Connect's: a warning, not an error.
     expect(checkAppJson(JSON.stringify({ review: { demoAccountRequired: true, demoAccountName: "a" } }))[0]?.severity).toBe("warning");
     expect(checkAppJson(JSON.stringify({ review: { demoAccountRequired: true, demoAccountName: "a", demoAccountPassword: null } }))[0]?.severity).toBe("error");
