@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { loadProject } from "../src/config";
 import { bytes, chars, isEmail, isHttpUrl, passwordProblem } from "../src/store/check";
 import { ASC_LOCALES, LOCALE_PATTERN, localeDirs, readStoreApp, readText, writeStoreApp, writeText } from "../src/store/files";
-import { pushMedia } from "../src/store/media";
 import { pushMetadata } from "../src/store/metadata";
 import { temp } from "./helpers";
 
@@ -94,7 +93,6 @@ describe("app.json", () => {
   test("the feature stubs fail with a hint until they're built", async () => {
     const p = await project();
     await expect(pushMetadata(p, { appId: "1" })).rejects.toMatchObject({ code: "not-implemented" });
-    await expect(pushMedia(p, { appId: "1" })).rejects.toMatchObject({ code: "not-implemented" });
   });
 });
 
