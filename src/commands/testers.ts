@@ -1,6 +1,6 @@
 // ship testers: list and invite TestFlight testers.
 
-import { addTester, betaGroups, groupTesters } from "../asc/api";
+import { addTester, betaGroups, groupTesters } from "../asc/testflight";
 import { type Command, stringFlag } from "../command";
 import { loadProject } from "../config";
 import { ShipError, table, ui } from "../ui";

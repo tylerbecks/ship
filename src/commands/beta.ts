@@ -1,16 +1,8 @@
 // ship beta and ship distribute: archive, upload, and send a build to TestFlight.
 
 import { join, relative } from "node:path";
-import {
-  type Build,
-  addBuildToGroup,
-  betaGroups,
-  findBuild,
-  highestBuildNumber,
-  setExemptEncryption,
-  setWhatToTest,
-  submitForBetaReview,
-} from "../asc/api";
+import { type Build, findBuild, highestBuildNumber, setExemptEncryption } from "../asc/builds";
+import { addBuildToGroup, betaGroups, setWhatToTest, submitForBetaReview } from "../asc/testflight";
 import { archive, checkInfo, exportIPA, ipaInfo, upload, withKeyFile } from "../build";
 import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";

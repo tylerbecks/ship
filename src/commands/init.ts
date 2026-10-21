@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { lookupApp } from "../asc/api";
+import { lookupApp } from "../asc/apps";
 import { hasCredentials } from "../credentials";
 import {
   CONFIG_FILE,

@@ -53,6 +53,11 @@ export async function credentials(): Promise<Credentials> {
   return cached;
 }
 
+/** Uses these credentials for the rest of the process instead of reading them (tests; undefined forgets them). */
+export function useCredentials(creds: Credentials | undefined) {
+  cached = creds;
+}
+
 /** Whether a key is configured, without reading any secrets. */
 export async function hasCredentials(): Promise<boolean> {
   const env = process.env;

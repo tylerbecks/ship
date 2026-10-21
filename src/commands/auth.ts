@@ -1,6 +1,6 @@
 // ship auth: the App Store Connect API key ship signs requests with.
 
-import { lookupApp } from "../asc/api";
+import { lookupApp } from "../asc/apps";
 import { bearerToken } from "../asc/client";
 import { type Command, stringFlag } from "../command";
 import { loadSettings, saveSettings, settingsPath } from "../config";

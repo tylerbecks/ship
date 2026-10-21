@@ -1,6 +1,6 @@
 // ship doctor: check that everything ship needs is ready.
 
-import { lookupApp } from "../asc/api";
+import { lookupApp } from "../asc/apps";
 import { type Command } from "../command";
 import { CONFIG_FILE, findConfigRoot, loadProject, loadSettings } from "../config";
 import { hasCredentials, serviceAccountToken } from "../credentials";

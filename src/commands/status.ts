@@ -1,6 +1,8 @@
 // ship status: recent builds, their commits, TestFlight state, and groups.
 
-import { type BetaGroup, type Build, betaGroups, lookupApp, recentBuilds } from "../asc/api";
+import { lookupApp } from "../asc/apps";
+import { type Build, recentBuilds } from "../asc/builds";
+import { type BetaGroup, betaGroups } from "../asc/testflight";
 import { type Project, loadApps, loadProject } from "../config";
 import { hasCredentials } from "../credentials";
 import { type Since, buildCommits, describeSince, fetchBuildTags, sinceBuild } from "../git";
