@@ -12,6 +12,7 @@ import { commands as feedback } from "./feedback";
 import { commands as groups } from "./groups";
 import { commands as init } from "./init";
 import { commands as metadata } from "./metadata";
+import { commands as open } from "./open";
 import { commands as release } from "./release";
 import { commands as screenshots } from "./screenshots";
 import { commands as secret } from "./secret";
@@ -32,6 +33,7 @@ export const commands: Command[] = [
   ...beta,
   ...testers,
   ...archive,
+  ...open,
   ...builds,
   // TestFlight
   ...groups,

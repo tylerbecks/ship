@@ -91,6 +91,34 @@ For App Playground packages, the build number is written to `Package.swift`'s `b
 
 Build products and logs go in the repo's `.ship/` folder (git-ignored), so worktrees never collide. `SHIP_JOBS=4` limits parallel compile jobs.
 
+## Swift macros and package plugins
+
+Xcode won't build a package's Swift macros or run its build plugins until someone clicks **Trust & Enable**, and a command-line build can't ask. When an archive stops for that, ship says which ones and how to get past it:
+
+```
+✗ Xcode won't build 3 Swift macros until you trust them
+  PerceptionMacros (swift-perception)
+  StructuredQueriesMacros, StructuredQueriesSQLiteMacros (swift-structured-queries)
+  A command-line build can't ask, so trust them once in Xcode:
+    ship open        then build (⌘B) and click Trust & Enable
+  Then run ship again. Or skip the check for this repo, in ship.json:
+    "build": { "skipMacroValidation": true }
+```
+
+`ship open` opens the project in Xcode (in terminals that support links, it's clickable too). Xcode remembers the trust for this Mac until the package changes. With `--json`, the error is `untrusted-package` with `untrusted` (each macro or plugin and its package), `projectPath`, `openCommand`, and `settings`, so an agent can offer to open Xcode.
+
+To skip Xcode's check in a repo that has decided to trust its packages, as CI does, set it in `ship.json`. It's committed, so the choice shows up in review:
+
+```json
+"build": {
+  "skipMacroValidation": true,
+  "skipPackagePluginValidation": true,
+  "xcodebuildArgs": ["-quiet"]
+}
+```
+
+`xcodebuildArgs` adds anything else to `xcodebuild archive`, after ship's own arguments.
+
 ## What to Test from git
 
 `ship beta --notes-from-git` fills What to Test with the commit subjects since the previous TestFlight build: the newest `testflight/<build>` tag in the commit's history, or the last 30 commits when there's none. Subjects are cleaned for testers: emoji and `:gitmoji:` codes, `feat(scope)!:` prefixes, and `(#123)` go, and chores (chore, ci, test, docs, style, build, refactor) and merges are left out.

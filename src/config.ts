@@ -9,6 +9,7 @@ import { run } from "./exec";
 import { canonicalRoot, checkoutTop, inLinkedCheckout, mainCheckout, worktreeRoots } from "./git";
 import { DEFAULT_PLATFORM, PLATFORM_NAMES, type Platform, isPlatform } from "./platform";
 import { STORE_DEFAULT } from "./store/files";
+import { checkBuildSettings } from "./trust";
 import { ShipError, ui } from "./ui";
 
 export const CONFIG_FILE = "ship.json";
@@ -35,6 +36,15 @@ export interface ProjectConfig {
   platform?: Platform;
   /** The folder with the App Store page and TestFlight info as files, relative to ship.json. Default "appstore". */
   store?: string;
+  /** How `ship beta` and `ship archive` run xcodebuild archive. */
+  build?: {
+    /** Build Swift macros without Xcode's trust prompt (-skipMacroValidation). */
+    skipMacroValidation?: boolean;
+    /** Run package build plugins without Xcode's trust prompt (-skipPackagePluginValidation). */
+    skipPackagePluginValidation?: boolean;
+    /** More arguments for xcodebuild archive, after ship's own. */
+    xcodebuildArgs?: string[];
+  };
   /** `ship beta` defaults. */
   beta?: {
     /** Fill "What to Test" from commit subjects when --notes isn't given. */
@@ -332,6 +342,7 @@ async function projectAt(root: string): Promise<Project> {
       { choices: PLATFORM_NAMES },
     );
   }
+  checkBuildSettings(config.build, join(root, CONFIG_FILE));
   return {
     root,
     config,

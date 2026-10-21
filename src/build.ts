@@ -3,10 +3,12 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Project } from "./config";
+import { pathToFileURL } from "node:url";
+import { type Project, findConfigRoot } from "./config";
 import type { Credentials } from "./credentials";
 import { run, runOrThrow } from "./exec";
 import { platformInfo } from "./platform";
+import { buildSettingArgs, trustError, untrustedPackages } from "./trust";
 import { ShipError, ui } from "./ui";
 import { setPackageBuild, target } from "./xcode";
 
@@ -81,25 +83,45 @@ export async function archive(project: Project, build: string, creds?: Credentia
     await setPackageBuild(container.path, build);
   }
   const { args, cwd } = target(container);
-  await runOrThrow(
-    [
-      "xcodebuild", "archive",
-      ...args,
-      "-scheme", project.config.scheme,
-      "-configuration", "Release",
-      "-destination", platformInfo(project.platform).destination,
-      "-archivePath", paths.archive,
-      "-derivedDataPath", join(project.workDir, "DerivedData"),
-      ...authArgs(creds, key),
-      // SHIP_JOBS limits parallel compile jobs, for machines that bog down.
-      ...(process.env.SHIP_JOBS ? ["-jobs", process.env.SHIP_JOBS] : []),
-      // Projects read the build number from this setting.
-      `CURRENT_PROJECT_VERSION=${build}`,
-      ...(commit ? [`SHIP_COMMIT=${commit}`] : []),
-    ],
-    { cwd, logFile: paths.archiveLog, what: "Archiving" },
-  );
+  const command = [
+    "xcodebuild", "archive",
+    ...args,
+    "-scheme", project.config.scheme,
+    "-configuration", "Release",
+    "-destination", platformInfo(project.platform).destination,
+    "-archivePath", paths.archive,
+    "-derivedDataPath", join(project.workDir, "DerivedData"),
+    ...authArgs(creds, key),
+    // SHIP_JOBS limits parallel compile jobs, for machines that bog down.
+    ...(process.env.SHIP_JOBS ? ["-jobs", process.env.SHIP_JOBS] : []),
+    // Projects read the build number from this setting.
+    `CURRENT_PROJECT_VERSION=${build}`,
+    ...(commit ? [`SHIP_COMMIT=${commit}`] : []),
+    // ship.json's "build" settings: skipping Xcode's trust prompt, and any other arguments.
+    ...buildSettingArgs(project.config.build),
+  ];
+  try {
+    await runOrThrow(command, { cwd, logFile: paths.archiveLog, what: "Archiving" });
+  } catch (error) {
+    if (!(error instanceof ShipError) || error.code !== "command-failed") throw error;
+    const untrusted = untrustedPackages(await Bun.file(paths.archiveLog).text().catch(() => ""));
+    if (!untrusted) throw error;
+    const openCommand = openCommandFor(project);
+    throw trustError(untrusted, {
+      open: ui.link(openCommand, pathToFileURL(project.projectPath).href),
+      openCommand,
+      projectPath: project.projectPath,
+      log: paths.archiveLog,
+    });
+  }
   return paths.archive;
+}
+
+/** The command that opens this project in Xcode: `ship open`, with --app when the current folder is another repo. */
+export function openCommandFor(project: Project, cwd = process.cwd()): string {
+  if (findConfigRoot(cwd) === project.root) return "ship open";
+  const name = /^[\w.-]+$/.test(project.config.name) ? project.config.name : JSON.stringify(project.config.name);
+  return `ship open --app ${name}`;
 }
 
 /** Exports an App Store Connect package from the archive: an .ipa, or a .pkg for macOS. */

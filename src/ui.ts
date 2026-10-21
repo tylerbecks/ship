@@ -44,6 +44,11 @@ export const ui = {
     if (!this.quiet) console.error(`  ${message}`);
   },
 
+  /** `text` as a clickable terminal link to `url` when people see it on a terminal; plain text otherwise. */
+  link(text: string, url: string): string {
+    return !this.json && process.stderr.isTTY ? `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\` : text;
+  },
+
   /** Prints the command's result: JSON on stdout, or the human version. */
   result(data: unknown, human?: () => void) {
     if (this.json) {

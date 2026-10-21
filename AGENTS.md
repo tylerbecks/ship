@@ -19,6 +19,7 @@
 - `src/credentials.ts`: the API key, from SHIP_ASC_* or config.json's references
 - `src/platform.ts`: ios/macos/tvos/visionos → xcodebuild destination, altool type, App Store Connect platform, package
 - `src/build.ts`: archive, export, .ipa/.pkg checks, and upload
+- `src/trust.ts`: Xcode's trust prompt for package macros and plugins, and ship.json's `build` settings
 - `src/xcode.ts`: finding projects, schemes, and settings
 - `src/config.ts`: ship.json, the machine's app list (worktrees map to their main checkout), and settings
 - `src/git.ts`: the commit a build comes from, the `testflight/<build>` tags that record it, and worktrees
