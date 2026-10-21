@@ -104,7 +104,38 @@ Build products and logs go in the repo's `.ship/` folder (git-ignored), so workt
 ## TestFlight
 
 <!-- feature:testflight -->
-(Coming: ship groups, ship testflight, and ship feedback.)
+Everything you'd otherwise click through in App Store Connect → TestFlight.
+
+**Testers.** `ship testers` lists the first external group (or `--group <name>`); `ship testers add a@example.com b@example.com` invites people and keeps going when one fails; `ship testers remove a@example.com` takes them out of the group, and `--everywhere` out of every group and the app's TestFlight. Internal groups only take App Store Connect users.
+
+**Groups.** `ship groups` lists them with their tester counts and public links.
+
+```
+ship groups create "Beta" --public-link --limit 200   # an external group anyone can join, up to 200 testers
+ship groups create "Team" --internal --all-builds      # App Store Connect users, every build automatically
+ship groups link "Beta" off                            # or: on --limit 500, on --no-limit
+ship groups rename "Beta" "Public beta"
+ship groups delete "Public beta"
+```
+
+Names match without case. If ship.json's `groups` names a group you rename or delete, ship reminds you to update it.
+
+**Test information as files.** What testers see about the beta and what Beta App Review needs live in `appstore/testflight/`, so changes go through pull requests like code:
+
+```
+appstore/testflight/
+  review.json            contact, and the demo account ("demoAccountPassword": "keychain:ship/lift-beta-demo-password")
+  review-notes.txt       notes for Beta App Review
+  en-US/
+    description.txt      about the beta (up to 4000 characters)
+    feedback-email.txt  marketing-url.txt  privacy-policy-url.txt  tvos-privacy-policy.txt
+```
+
+`ship testflight pull` writes the folder from App Store Connect (it stops rather than overwrite files you changed; `--force` overwrites). `ship testflight diff` shows what would change, `ship testflight push` sends it (`--dry-run` first if you like; `--prune` deletes languages that have no folder), and `ship testflight validate` checks lengths, URLs, emails, and the demo account offline. A missing file isn't managed; an empty one clears the field.
+
+The demo account password is never written to the repo: `review.json` holds a reference (see [Secrets](#secrets)), and ship reads it only to send it to Apple. `pull` writes `null` there and tells you how to save it; `null` leaves App Store Connect's password as it is, and `""` clears it.
+
+**Feedback.** `ship feedback` lists the screenshots and crash reports testers sent, newest first (`--build <n>`, `--crashes`, `--screenshots`, `--limit <n>`). `ship feedback show <id>` shows one, with the crash log; `ship feedback download` saves screenshots, comments, and crash logs to `.ship/feedback/<date>-<id>/` (or `--out <dir>`); `ship feedback delete <id>` clears what you've dealt with. Reading feedback needs a key with the App Manager or Admin role.
 <!-- /feature:testflight -->
 
 ## Builds
