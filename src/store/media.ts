@@ -163,8 +163,26 @@ export async function hashSet(set: LocalSet): Promise<LocalSet> {
 
 export const LOCK_FILE = "media.lock.json";
 
-/** Local path → the local file's MD5 and the upload's sourceFileChecksum it stands for. */
-export type MediaLock = Record<string, { md5: string; checksum: string }>;
+/** The local file's MD5 and the upload's sourceFileChecksum it stands for. */
+export interface LockEntry {
+  md5: string;
+  checksum: string;
+}
+
+/** Local path → the upload it stands for. */
+export type MediaLock = Record<string, LockEntry>;
+
+const folderOf = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);
+
+/**
+ * Lock entries for a file that was renamed (to reorder it, say): other paths
+ * in the same folder whose entry has the file's MD5. The lock is keyed by
+ * path, so without these a renamed pulled file matches nothing.
+ */
+const renamedEntries = (lock: MediaLock, file: { path: string; md5: string }): LockEntry[] =>
+  Object.entries(lock)
+    .filter(([path, entry]) => path !== file.path && folderOf(path) === folderOf(file.path) && entry.md5 === file.md5)
+    .map(([, entry]) => entry);
 
 export const lockPath = (storeDir: string) => join(storeDir, LOCK_FILE);
 
@@ -265,8 +283,14 @@ export interface FullPlan extends SetPlan {
   /** Local path → the remote id it matches. */
   matched: Map<string, string>;
   deleteIds: string[];
-  /** Remote id → the local path whose new upload replaces it. */
+  /**
+   * Remote id → the local path the lock tied it to, whose file changed since.
+   * The path is in `replace` (its new upload replaces it), or in `matched`
+   * when a push that stopped halfway already uploaded the new one.
+   */
   replaced: Map<string, string>;
+  /** Local path → the lock entry it should have: matched files whose entry is missing, stale, or under another name. */
+  relock: Map<string, LockEntry>;
   keptIds: string[];
   /** The order push ends with: remote ids, and "local:<path>" for uploads. */
   order: string[];
@@ -296,18 +320,29 @@ export function planSet(input: PlanInput): FullPlan {
     return found;
   };
 
-  // The lock first, since it ties a path to one upload; then plain checksums.
+  // The lock first, since it ties a path to one upload; then the lock under
+  // another name in the folder (a renamed file); then plain checksums.
+  const checksums = new Map<string, string>();
+  const match = (file: { path: string; md5: string }, test: (item: RemoteItem) => boolean) => {
+    if (matched.has(file.path)) return;
+    const found = take(test);
+    if (!found) return;
+    matched.set(file.path, found.id);
+    checksums.set(file.path, found.checksum!);
+  };
   for (const file of local) {
     const entry = lock[file.path];
-    if (entry && entry.md5 === file.md5) {
-      const found = take((item) => item.checksum === entry.checksum);
-      if (found) matched.set(file.path, found.id);
-    }
+    if (entry && entry.md5 === file.md5) match(file, (item) => item.checksum === entry.checksum);
   }
   for (const file of local) {
-    if (matched.has(file.path)) continue;
-    const found = take((item) => item.checksum === file.md5);
-    if (found) matched.set(file.path, found.id);
+    for (const entry of renamedEntries(lock, file)) match(file, (item) => item.checksum === entry.checksum);
+  }
+  for (const file of local) match(file, (item) => item.checksum === file.md5);
+
+  const relock = new Map<string, LockEntry>();
+  for (const [path, checksum] of checksums) {
+    const md5 = local.find((file) => file.path === path)!.md5;
+    if (lock[path]?.md5 !== md5 || lock[path]?.checksum !== checksum) relock.set(path, { md5, checksum });
   }
 
   const upload: string[] = [];
@@ -316,7 +351,8 @@ export function planSet(input: PlanInput): FullPlan {
   const replaced = new Map<string, string>();
   for (const file of local) {
     const entry = lock[file.path];
-    // A file the lock knows that changed: its old upload goes, whether or not the new one matches something.
+    // A file the lock knows that changed: its old upload goes, whether or not the new one matches something
+    // (it does when a push stopped after uploading the new one and before deleting the old).
     const old = entry && entry.md5 !== file.md5 ? take((item) => item.checksum === entry.checksum) : undefined;
     if (old) {
       deleteIds.push(old.id);
@@ -371,6 +407,7 @@ export function planSet(input: PlanInput): FullPlan {
     matched,
     deleteIds,
     replaced,
+    relock,
     keptIds,
     order,
     input,
@@ -392,7 +429,8 @@ export function planChanges(plan: FullPlan): Change[] {
     changes.push({ scope, field: baseName(path), kind: "change", from: old, to: md5.get(path) });
   }
   for (const id of plan.deleteIds) {
-    if (plan.replaced.has(id)) continue;
+    // A replacement's "~" covers its old upload; one whose new upload is already there is a plain delete.
+    if (plan.replace.includes(plan.replaced.get(id)!)) continue;
     const item = byId.get(id)!;
     changes.push({ scope, field: item.fileName, kind: "remove", from: item.checksum ?? null, to: null });
   }
@@ -742,16 +780,27 @@ export async function syncMedia(project: Project, options: MediaOptions): Promis
     skipped: comparison.skipped,
     sets: comparison.plans.map(setJSON),
   };
-  if (dryRun || !comparison.changes.length) return result;
+  if (dryRun) return result;
 
   const before = comparison.lock;
+  // Matched files whose lock entry is missing, stale, or under an old name get
+  // theirs now; one whose old upload is still to be deleted waits for that.
   let lock = before;
+  for (const plan of comparison.plans) {
+    const waiting = new Set(plan.replaced.values());
+    for (const [path, entry] of plan.relock) if (!waiting.has(path)) lock = { ...lock, [path]: entry };
+  }
+  if (!comparison.changes.length) {
+    if (lock !== before) await writeLock(project.storeDir, lock);
+    return result;
+  }
+
   try {
     for (const plan of comparison.plans) {
       await applyPlan(plan, comparison, options, {
         uploaded: (path) => result.uploaded.push(path),
-        locked: (path, md5) => {
-          lock = updateLock(lock, { uploaded: [{ path, md5 }] });
+        locked: (path, entry) => {
+          lock = sortLock({ ...lock, [path]: entry });
         },
         // Apple rejected it and it was deleted: forget the upload, and keep what the lock said before.
         failed: (path) => {
@@ -776,7 +825,7 @@ export async function syncMedia(project: Project, options: MediaOptions): Promis
 interface Progress {
   uploaded(path: string): void;
   /** The lock may now say this path stands for its new upload. */
-  locked(path: string, md5: string): void;
+  locked(path: string, entry: LockEntry): void;
   failed(path: string): void;
   deleted(fileName: string): void;
   reordered(): void;
@@ -792,7 +841,11 @@ async function applyPlan(plan: Planned, comparison: Comparison, options: MediaOp
   const byId = new Map(plan.input.remote.map((item) => [item.id, item]));
   // A replacement's lock entry waits until its old upload is gone. Until then the
   // lock still names the old one, so a push that stops in between deletes it next time.
-  const waiting = new Map<string, { path: string; md5: string }>();
+  const waiting = new Map<string, { path: string; entry: LockEntry }>();
+  for (const [id, path] of plan.replaced) {
+    const entry = plan.relock.get(path);
+    if (entry) waiting.set(id, { path, entry });
+  }
   const deleteAll = async () => {
     for (const id of plan.deleteIds) {
       await deleteMediaAsset(kind, id);
@@ -800,7 +853,7 @@ async function applyPlan(plan: Planned, comparison: Comparison, options: MediaOp
       progress.deleted(name);
       ui.note(`- ${name}`);
       const replacement = waiting.get(id);
-      if (replacement) progress.locked(replacement.path, replacement.md5);
+      if (replacement) progress.locked(replacement.path, replacement.entry);
     }
     plan.deleteIds = [];
   };
@@ -836,8 +889,9 @@ async function applyPlan(plan: Planned, comparison: Comparison, options: MediaOp
       }
       progress.uploaded(file.path);
       const old = oldUpload.get(file.path);
-      if (old && plan.deleteIds.includes(old)) waiting.set(old, { path: file.path, md5: file.md5! });
-      else progress.locked(file.path, file.md5!);
+      const entry = { md5: file.md5!, checksum: file.md5! };
+      if (old && plan.deleteIds.includes(old)) waiting.set(old, { path: file.path, entry });
+      else progress.locked(file.path, entry);
       ui.note(`+ ${file.name}`);
     }
     if (options.wait !== false) {
@@ -907,7 +961,11 @@ function pulledExtension(kind: MediaKind, asset: MediaAsset): string {
   return asset.mimeType === "video/quicktime" ? ".mov" : ".mp4";
 }
 
-/** Which local file (if any) stands for each remote asset: by the lock, then by MD5. A file stands for one asset at most. */
+/**
+ * Which local file (if any) stands for each remote asset: by the lock, then by
+ * the lock under another name in the folder (a renamed file), then by MD5. A
+ * file stands for one asset at most.
+ */
 export function matchPulled(assets: { checksum?: string }[], files: { path: string; md5: string }[], lock: MediaLock): (string | undefined)[] {
   const claimed = new Set<string>();
   const pick = (checksum: string | undefined, test: (file: { path: string; md5: string }) => boolean) => {
@@ -917,7 +975,10 @@ export function matchPulled(assets: { checksum?: string }[], files: { path: stri
     return found?.path;
   };
   const byLock = assets.map((asset) => pick(asset.checksum, (file) => lock[file.path]?.md5 === file.md5 && lock[file.path]?.checksum === asset.checksum));
-  return assets.map((asset, i) => byLock[i] ?? pick(asset.checksum, (file) => file.md5 === asset.checksum));
+  const byRename = assets.map(
+    (asset, i) => byLock[i] ?? pick(asset.checksum, (file) => renamedEntries(lock, file).some((entry) => entry.checksum === asset.checksum)),
+  );
+  return assets.map((asset, i) => byRename[i] ?? pick(asset.checksum, (file) => file.md5 === asset.checksum));
 }
 
 /**
@@ -950,6 +1011,9 @@ export async function pullMedia(project: Project, options: MediaOptions & { forc
             const match = matches[index];
             if (match) {
               result.unchanged.push(match);
+              // Under its current name, so a renamed file keeps matching after the old name's entry goes.
+              const md5 = files.find((file) => file.path === match)!.md5;
+              if (asset.checksum) lock[match] = { md5, checksum: asset.checksum };
               continue;
             }
             const name = mediaFileName(index, asset.fileName, pulledExtension(kind, asset), NOUN[kind][0]);

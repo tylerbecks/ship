@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { polling } from "../src/asc/media";
 import type { AppStoreVersion } from "../src/asc/versions";
@@ -225,6 +225,48 @@ describe("plan", () => {
       undefined,
       undefined,
     ]);
+  });
+
+  test("renaming pulled files to reorder them is only a reorder", () => {
+    const lock = { [P("01-a.png")]: { md5: "pa", checksum: "ca" }, [P("02-b.png")]: { md5: "pb", checksum: "cb" } };
+    const plan = planSet({
+      ...base,
+      lock,
+      local: [{ path: P("01-b.png"), md5: "pb" }, { path: P("02-a.png"), md5: "pa" }],
+      remote: [{ id: "1", fileName: "a.png", checksum: "ca" }, { id: "2", fileName: "b.png", checksum: "cb" }],
+    });
+    expect(setJSON(plan)).toMatchObject({ upload: [], replace: [], delete: [], keep: 0, reorder: true });
+    expect(plan.order).toEqual(["2", "1"]);
+    // The lock moves to the new names.
+    expect(Object.fromEntries(plan.relock)).toEqual({ [P("01-b.png")]: { md5: "pb", checksum: "cb" }, [P("02-a.png")]: { md5: "pa", checksum: "ca" } });
+    // Swapping the contents under the same names is the same.
+    const swapped = planSet({
+      ...base,
+      lock,
+      local: [{ path: P("01-a.png"), md5: "pb" }, { path: P("02-b.png"), md5: "pa" }],
+      remote: [{ id: "1", fileName: "a.png", checksum: "ca" }, { id: "2", fileName: "b.png", checksum: "cb" }],
+    });
+    expect(setJSON(swapped)).toMatchObject({ upload: [], replace: [], delete: [], reorder: true });
+  });
+
+  test("pull finds a renamed file through the lock", () => {
+    const lock = { "set/01-a.png": { md5: "pa", checksum: "ca" }, "other/01-b.png": { md5: "pb", checksum: "cb" } };
+    expect(matchPulled([{ checksum: "ca" }], [{ path: "set/05-a.png", md5: "pa" }], lock)).toEqual(["set/05-a.png"]);
+    // Only within the same folder.
+    expect(matchPulled([{ checksum: "cb" }], [{ path: "set/02-b.png", md5: "pb" }], lock)).toEqual([undefined]);
+  });
+
+  test("an old upload left by a push that stopped halfway is deleted, even when that's all there is to do", () => {
+    const lock = { [P("01-home.png")]: { md5: "pulled", checksum: "first" } };
+    const plan = planSet({
+      ...base,
+      lock,
+      local: [{ path: P("01-home.png"), md5: "edited" }],
+      remote: [{ id: "A", fileName: "home.png", checksum: "first" }, { id: "R", fileName: "01-home.png", checksum: "edited" }],
+    });
+    expect(setJSON(plan)).toMatchObject({ upload: [], replace: [], delete: ["home.png"], reorder: false });
+    expect(planChanges(plan)).toEqual([{ scope: "en-US/screenshots/APP_IPHONE_67", field: "home.png", kind: "remove", from: "first", to: null }]);
+    expect(plan.relock.get(P("01-home.png"))).toEqual({ md5: "edited", checksum: "edited" });
   });
 
   test("the same image twice matches two uploads", () => {
@@ -538,6 +580,35 @@ describe("push and pull", () => {
       remote: [shot("A", "home.png", "first"), shot("R", "01-home.png", md5(edited))].map((item) => ({ id: item.id, fileName: String(item.attributes.fileName), checksum: String(item.attributes.sourceFileChecksum) })),
     });
     expect(setJSON(next)).toMatchObject({ upload: [P("02-new.png")], replace: [], delete: ["home.png"], keep: 0 });
+
+    // Without the other file, deleting the old upload is all that's left; push does it and moves the lock to the new one.
+    rmSync(join(p.storeDir, P("02-new.png")));
+    mock.restore();
+    mock = fakeAsc({ screenshots: [shot("A", "home.png", "first"), shot("R", "01-home.png", md5(edited))] });
+    const result = await syncMedia(p, { appId: "APP" });
+    expect(result).toMatchObject({ applied: true, uploaded: [], deleted: ["home.png"] });
+    expect(mock.calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`)).toEqual(["DELETE /v1/appScreenshots/A"]);
+    expect(await readLock(p.storeDir)).toEqual({ [P("01-home.png")]: { md5: md5(edited), checksum: md5(edited) } });
+
+    // So the next edit replaces the new upload rather than adding beside it.
+    const edit = planSet({ ...base, lock: await readLock(p.storeDir), local: [{ path: P("01-home.png"), md5: "again" }], remote: [{ id: "R", fileName: "01-home.png", checksum: md5(edited) }] });
+    expect(setJSON(edit)).toMatchObject({ upload: [], replace: [P("01-home.png")], delete: ["01-home.png"], keep: 0 });
+  });
+
+  test("a push with nothing to change still records which upload each file stands for", async () => {
+    const p = await project();
+    const image = png(1290, 2796);
+    addFile(p, P("01-home.png"), image);
+    mock = fakeAsc({ screenshots: [shot("A", "home.png", md5(image))] });
+    const result = await syncMedia(p, { appId: "APP" });
+    expect(result).toMatchObject({ changes: [], applied: false });
+    expect(mock.calls.every((c) => c.method === "GET")).toBe(true);
+    expect(await readLock(p.storeDir)).toEqual({ [P("01-home.png")]: { md5: md5(image), checksum: md5(image) } });
+    // --dry-run writes nothing.
+    const other = await project();
+    addFile(other, P("01-home.png"), image);
+    await syncMedia(other, { appId: "APP", dryRun: true });
+    expect(existsSync(join(other.storeDir, "media.lock.json"))).toBe(false);
   });
 
   test("files in App Store Connect that aren't in the repo are reported as skipped", async () => {
@@ -606,6 +677,12 @@ describe("push and pull", () => {
     expect(diff).toMatchObject({ changes: [], hasChanges: false });
     const again = await pullMedia(p, { appId: "APP" });
     expect(again).toMatchObject({ written: [], unchanged: [P("01-Home-Screen.png")] });
+
+    // A renamed file still stands for its upload, and the lock follows the new name.
+    renameSync(join(p.storeDir, P("01-Home-Screen.png")), join(p.storeDir, P("02-home.png")));
+    expect(await diffMedia(p, { appId: "APP" })).toMatchObject({ changes: [], hasChanges: false });
+    expect(await pullMedia(p, { appId: "APP" })).toMatchObject({ written: [], unchanged: [P("02-home.png")] });
+    expect(await readLock(p.storeDir)).toEqual({ [P("02-home.png")]: { md5: md5(bytes), checksum: "orig" } });
   });
 
   test("a failed download still records what was pulled", async () => {
