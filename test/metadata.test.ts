@@ -247,7 +247,7 @@ describe("validate", () => {
   test("a plaintext password is refused; references are fine", () => {
     const plain = checkAppJson(JSON.stringify({ review: { demoAccountPassword: "hunter2" } }));
     expect(plain).toHaveLength(1);
-    expect(plain[0]).toMatchObject({ severity: "error", field: "review.demoAccountPassword" });
+    expect(plain[0]).toMatchObject({ severity: "error", field: "review.demoAccountPassword", code: "plaintext-secret" });
     expect(plain[0]!.message).not.toContain("hunter2");
     for (const reference of ["keychain:ship/demo", "op://Private/Lift/password", "env:DEMO_PASSWORD", "file:~/demo.txt"]) {
       expect(checkAppJson(JSON.stringify({ review: { demoAccountRequired: true, demoAccountName: "a@example.com", demoAccountPassword: reference } }))).toEqual([]);
@@ -654,6 +654,12 @@ describe("pull and push", () => {
     app.categories.primary = "HEALTH";
     await Bun.write(join(p.storeDir, "app.json"), JSON.stringify(app));
     await expect(pushMetadata(p, { appId: "app1" })).rejects.toMatchObject({ code: "bad-category" });
+    app.categories.primary = "SPORTS";
+    app.review.demoAccountPassword = "hunter2";
+    await Bun.write(join(p.storeDir, "app.json"), JSON.stringify(app));
+    const plaintext = await pushMetadata(p, { appId: "app1" }).catch((e) => e);
+    expect(plaintext).toMatchObject({ code: "plaintext-secret", hint: expect.stringContaining("ship secret set") });
+    expect(JSON.stringify(plaintext.details)).not.toContain("hunter2");
     expect(writes(mock.calls)).toEqual([]);
   });
 

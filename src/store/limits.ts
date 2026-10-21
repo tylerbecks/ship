@@ -46,6 +46,9 @@ export const STORE_FILES = ["app.json", REVIEW_NOTES_FILE, "media.lock.json"];
 export const fieldForFile = (file: string) => LOCALE_FIELDS.find((entry) => entry.file === file);
 export const fileForField = (field: string) => LOCALE_FIELDS.find((entry) => entry.field === field);
 
+/** The code on a problem (and push's error) for a password written out instead of referenced. */
+export const PLAINTEXT_SECRET = "plaintext-secret";
+
 /** Apple's limits beyond the per-file ones. */
 export const LIMITS = { nameMin: 2, keywordBytes: 100, reviewNotes: 4000, subcategories: 2 };
 
@@ -264,7 +267,7 @@ function checkReview(value: unknown): Problem[] {
   const password = value.demoAccountPassword;
   if (isText(password)) {
     const plain = passwordProblem("app.json", "review.demoAccountPassword", password as string);
-    if (plain) problems.push(plain);
+    if (plain) problems.push({ ...plain, code: PLAINTEXT_SECRET } as Problem);
   }
   if (value.demoAccountRequired === true) {
     if (!value.demoAccountName && value.demoAccountName !== undefined) {

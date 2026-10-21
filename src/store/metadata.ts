@@ -71,6 +71,7 @@ import {
   AGE_RATING_DEPRECATED,
   LOCALE_FIELDS,
   type LocaleTarget,
+  PLAINTEXT_SECRET,
   REVIEW_NOTES_FILE,
   STORE_FILES,
   type StoreSnapshot,
@@ -667,10 +668,14 @@ export async function prepare(project: Project, options: MetadataOptions & { str
   const snapshot = await readSnapshot(project.storeDir, options.locales);
   const errors = validateSnapshot(snapshot).filter((item) => item.severity === "error");
   if (errors.length) {
+    // A password written out is the one problem worth its own code: it must never be sent from the repo.
+    const plaintext = errors.some((item) => (item as { code?: string }).code === PLAINTEXT_SECRET);
     throw new ShipError(
       `The store folder has ${errors.length} problem${errors.length === 1 ? "" : "s"}:\n  ${errors.map((item) => `${item.file}${item.field ? ` ${item.field}` : ""}: ${item.message}`).join("\n  ")}`,
-      "invalid-metadata",
-      "Fix them and try again; `ship metadata validate` lists them.",
+      plaintext ? PLAINTEXT_SECRET : "invalid-metadata",
+      plaintext
+        ? "Save the password with `ship secret set keychain:ship/<name> --stdin`, write \"keychain:ship/<name>\" in app.json instead, and take it out of git history if it was committed."
+        : "Fix them and try again; `ship metadata validate` lists them.",
       { problems: errors },
     );
   }
