@@ -57,7 +57,11 @@ export const ui = {
     const shipError =
       error instanceof ShipError
         ? error
-        : new ShipError(error instanceof Error ? error.message : String(error), "unexpected");
+        : new ShipError(
+            error instanceof Error ? error.message : String(error),
+            "unexpected",
+            "That's a bug in ship. Run the command again with --json and report the error.",
+          );
     if (this.json) {
       console.log(
         JSON.stringify(

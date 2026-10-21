@@ -10,6 +10,23 @@ import { platformInfo } from "./platform";
 import { ShipError, ui } from "./ui";
 import { setPackageBuild, target } from "./xcode";
 
+/** A build number as Apple takes it (CFBundleVersion): one to three dot-separated whole numbers, like 42 or 1.2.3. */
+export const BUILD_NUMBER = /^\d+(\.\d+){0,2}$/;
+
+/** Stops a --build value Apple would reject, before archiving for minutes. */
+export function checkBuildNumber(value: string): string {
+  if (!BUILD_NUMBER.test(value)) {
+    throw new ShipError(
+      `"${value}" isn't a build number`,
+      "usage",
+      "Use one to three dot-separated whole numbers, like --build 42 or --build 1.2.3.",
+      undefined,
+      2,
+    );
+  }
+  return value;
+}
+
 /** Paths for one build's products and logs, under the repo's .ship folder. */
 export function buildPaths(project: Project, build: string) {
   const dir = join(project.workDir, "builds", build);

@@ -3,7 +3,7 @@
 import { join, relative } from "node:path";
 import { type Build, findBuild, highestBuildNumber, setExemptEncryption } from "../asc/builds";
 import { addBuildToGroup, betaGroups, setWhatToTest, submitForBetaReview } from "../asc/testflight";
-import { archive, buildPaths, checkInfo, exportIPA, packageInfo, upload, withKeyFile } from "../build";
+import { archive, buildPaths, checkBuildNumber, checkInfo, exportIPA, packageInfo, upload, withKeyFile } from "../build";
 import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
 import { type Commit, type Tagging, commitSetting, drift, headCommit, tagBuild, tagFor } from "../git";
@@ -303,6 +303,8 @@ async function localBuild(project: Project): Promise<number | undefined> {
 }
 
 
+const optionalBuild = (value: string | undefined) => (value === undefined ? undefined : checkBuildNumber(value));
+
 export const commands: Command[] = [
   {
     name: "beta",
@@ -321,7 +323,7 @@ export const commands: Command[] = [
         app: ctx.app,
         notes: stringFlag(ctx, "notes"),
         external: boolFlag(ctx, "external"),
-        build: stringFlag(ctx, "build"),
+        build: optionalBuild(stringFlag(ctx, "build")),
         wait: !boolFlag(ctx, "no-wait"),
         dryRun: boolFlag(ctx, "dry-run"),
         allowDirty: boolFlag(ctx, "allow-dirty"),
@@ -337,7 +339,7 @@ export const commands: Command[] = [
       if (!build) {
         throw new ShipError("Which build? ship distribute <build>", "usage", "`ship status` lists the build numbers.", undefined, 2);
       }
-      return distributeCommand(build, { app: ctx.app, notes: stringFlag(ctx, "notes"), external: boolFlag(ctx, "external") });
+      return distributeCommand(checkBuildNumber(build), { app: ctx.app, notes: stringFlag(ctx, "notes"), external: boolFlag(ctx, "external") });
     },
   },
 ];

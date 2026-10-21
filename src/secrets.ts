@@ -10,7 +10,7 @@
 
 import { homedir } from "node:os";
 import { settingsPath } from "./config";
-import { run } from "./exec";
+import { NOT_FOUND, run } from "./exec";
 import { KEYCHAIN_NAME, readGenericPassword, readServiceAccountToken } from "./keychain";
 import { ShipError } from "./ui";
 
@@ -48,6 +48,13 @@ const onePassword: SecretSource = {
     const token = await serviceAccountToken();
     const account = opAccount && !token ? ["--account", opAccount] : [];
     const result = await tools.op(["read", ...account, value], token ? { OP_SERVICE_ACCOUNT_TOKEN: token } : {});
+    if (result.code === NOT_FOUND) {
+      throw new ShipError(
+        `Couldn't read ${value}: the 1Password CLI isn't installed`,
+        "op-missing",
+        "Install it (brew install 1password-cli) and turn on its desktop app integration, or keep the secret in the Keychain instead (see `ship secret --help`).",
+      );
+    }
     if (result.code !== 0) {
       throw new ShipError(
         `Couldn't read ${value} from 1Password`,

@@ -1,6 +1,6 @@
 // ship archive: archive and export without uploading.
 
-import { archive, buildPaths, checkInfo, exportIPA, packageInfo, withKeyFile } from "../build";
+import { archive, buildPaths, checkBuildNumber, checkInfo, exportIPA, packageInfo, withKeyFile } from "../build";
 import { type Command, stringFlag } from "../command";
 import { loadProject } from "../config";
 import { credentials, hasCredentials } from "../credentials";
@@ -43,6 +43,9 @@ export const commands: Command[] = [
     index: [{ section: "daily", label: "archive", summary: "Archive and export without uploading" }],
     help: archiveHelp,
     flags: { build: { type: "string" } },
-    run: (ctx) => archiveCommand({ app: ctx.app, build: stringFlag(ctx, "build") }),
+    run: (ctx) => {
+      const build = stringFlag(ctx, "build");
+      return archiveCommand({ app: ctx.app, build: build === undefined ? undefined : checkBuildNumber(build) });
+    },
   },
 ];
