@@ -226,12 +226,6 @@ export async function openSubmissions(appId: string, platform: AscPlatform): Pro
   return data.map((resource) => toSubmission(resource, included));
 }
 
-/** A submission's items. */
-export async function submissionItems(submissionId: string): Promise<SubmissionItem[]> {
-  const { data } = await all(`/v1/reviewSubmissions/${encodeURIComponent(submissionId)}/items?fields[reviewSubmissionItems]=state,appStoreVersion&limit=50`);
-  return data.map(toItem);
-}
-
 /** Starts a draft submission. */
 export async function createSubmission(appId: string, platform: AscPlatform): Promise<ReviewSubmission> {
   const doc = await post<SubmissionAttributes>("/v1/reviewSubmissions", {

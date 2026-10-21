@@ -280,7 +280,7 @@ export async function writeProjectVersion(project: Project, to: string, options:
   const previous = [...new Set(edits.flatMap(({ edit }) => edit.previous))];
   const warnings: string[] = [];
   if (previous.length > 1) {
-    warnings.push(`Targets had different versions (${previous.join(", ")}); all are now ${to}, as App Store Connect requires extensions to match the app`);
+    warnings.push(`Targets have different versions (${previous.join(", ")}); all get ${to}, since App Store Connect requires extensions to match the app`);
   }
   for (const reference of new Set(edits.flatMap(({ edit }) => edit.references))) warnings.push(`Left MARKETING_VERSION = ${reference} alone`);
   const changed = edits.filter(({ edit }) => edit.previous.some((value) => value !== to));

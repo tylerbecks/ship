@@ -76,7 +76,7 @@ async function change(app: string | undefined, action: string, value: string | u
       console.log(`The version is already ${to}.`);
       return;
     }
-    const arrow = `${result.from ? `${result.from} → ` : ""}${to}`;
+    const arrow = result.from ? `${result.from} → ${to}` : `to ${to}`;
     console.log(`${dryRun ? "Would change" : "Changed"} the version ${arrow} in ${result.files.join(", ")}.`);
     if (!dryRun) console.log("Commit it before `ship beta`.");
   });

@@ -124,9 +124,9 @@ export function parseRelease(value: string, now = new Date()): { timing: Release
   if (!match) {
     throw new ShipError(`--release takes manual, auto, or a date, not "${value}"`, "usage", "For example: --release auto, or --release 2026-11-03T09:00", { choices }, 2);
   }
-  const [, day, hours = "00", minutes = "00", seconds = "00", zone = ""] = match;
-  const date = new Date(`${day}T${hours}:${minutes}:${seconds}${zone.toUpperCase()}`);
-  if (Number.isNaN(date.getTime())) {
+  const [, day = "", hours = "00", minutes = "00", seconds = "00", zone = ""] = match;
+  const date = new Date(`${day}T${hours}:${minutes}:${seconds}${zone.toUpperCase().replace(/^([+-]\d{2})(\d{2})$/, "$1:$2")}`);
+  if (Number.isNaN(date.getTime()) || !realDate(day, hours, minutes, seconds)) {
     throw new ShipError(`"${value}" isn't a real date`, "usage", "For example: --release 2026-11-03T09:00", { choices }, 2);
   }
   const rounded = Math.ceil(date.getTime() / HOUR) * HOUR;
@@ -137,6 +137,13 @@ export function parseRelease(value: string, now = new Date()): { timing: Release
     timing: { releaseType: "SCHEDULED", earliestReleaseDate: new Date(rounded).toISOString().replace(/\.\d{3}Z$/, "Z") },
     rounded: rounded !== date.getTime(),
   };
+}
+
+/** Whether a date and time exist: no February 30th or 25 o'clock (which Date would roll over). */
+function realDate(day: string, hours: string, minutes: string, seconds: string): boolean {
+  const [year = 0, month = 0, date = 0] = day.split("-").map(Number);
+  const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return month >= 1 && month <= 12 && date >= 1 && date <= days && Number(hours) < 24 && Number(minutes) < 60 && Number(seconds) < 60;
 }
 
 /** How to release, from --release or else app.json's "release". undefined leaves the version as it is. */
@@ -214,9 +221,11 @@ async function wantedVersion(project: Project, flag: string | undefined): Promis
 async function selectBuild(context: ReleaseContext, versionString: string, number: string | undefined): Promise<Build> {
   const hint = `Upload one with \`ship beta\` (the project's version must be ${versionString}).`;
   if (number !== undefined) {
-    const build = await findBuild(context.appId, number, context.platform);
-    if (!build) throw new ShipError(`App Store Connect has no build ${number}`, "no-build", `\`ship status\` lists the builds. ${hint}`, { build: number });
-    return build;
+    // Build numbers only have to be unique within a version, so look in this one first.
+    const [build] = await listBuilds(context.appId, { number, version: versionString, platform: context.platform, limit: 1 });
+    const found = build ?? (await findBuild(context.appId, number, context.platform));
+    if (!found) throw new ShipError(`App Store Connect has no build ${number}`, "no-build", `\`ship status\` lists the builds. ${hint}`, { build: number });
+    return found;
   }
   const [build] = await listBuilds(context.appId, {
     version: versionString,
@@ -640,7 +649,8 @@ export const versionStateText = (state: string) => STATE_TEXT[state] ?? stateTex
 export function statusLines(status: StatusResult, now = new Date()): string[] {
   const lines: string[] = [];
   const { version, live, submission } = status;
-  if (version) {
+  // A live version is described by the live line below.
+  if (version && version.id !== live?.id) {
     const build = version.build ? ` (build ${version.build.number})` : " (no build yet)";
     const submitted =
       submission?.submittedDate && ["WAITING_FOR_REVIEW", "IN_REVIEW"].includes(version.state) ? `, submitted ${ago(submission.submittedDate, now)}` : "";
@@ -652,9 +662,9 @@ export function statusLines(status: StatusResult, now = new Date()): string[] {
           ? `after approval, no earlier than ${localTime(version.earliestReleaseDate)}`
           : "automatically after approval"
     }${phased}.`;
-    lines.push(`${version.versionString}${build}: ${versionStateText(version.state)}${submitted}.${LIVE_VERSION_STATES.includes(version.state) ? "" : ` ${release}`}`);
+    lines.push(`${version.versionString}${build}: ${versionStateText(version.state)}${submitted}. ${release}`);
   }
-  if (live && live.id !== version?.id) {
+  if (live) {
     const phased = live.phasedRelease;
     const rollout =
       phased?.state === "ACTIVE"
@@ -779,6 +789,9 @@ function releaseOptions(ctx: Context): ReleaseOptions {
   const platform = stringFlag(ctx, "platform");
   const version = stringFlag(ctx, "version");
   const build = stringFlag(ctx, "build");
+  // A bad --release is a usage error before anything talks to App Store Connect.
+  const when = stringFlag(ctx, "release");
+  if (when !== undefined) parseRelease(when);
   return {
     version: version === undefined ? undefined : checkVersion(version),
     build: build === undefined ? undefined : checkBuildNumber(build),

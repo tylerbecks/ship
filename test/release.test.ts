@@ -25,8 +25,10 @@ import {
   releaseNow,
   releaseStatus,
   statusLines,
+  commands as releaseCommands,
   submit,
 } from "../src/commands/release";
+import { commands as versionCommands } from "../src/commands/version";
 import type { Project } from "../src/config";
 import { ShipError, ui } from "../src/ui";
 import {
@@ -317,6 +319,14 @@ describe("--release", () => {
     expect(error.code).toBe("usage");
     expect(error.details?.choices).toContain("manual");
     expect(caught(() => parseRelease("2026-13-45", now)).code).toBe("usage");
+    expect(caught(() => parseRelease("2027-02-30", now)).message).toContain("isn't a real date");
+    expect(caught(() => parseRelease("2026-11-03T25:00", now)).message).toContain("isn't a real date");
+  });
+
+  test("zones with or without a colon", () => {
+    expect(parseRelease("2026-11-03T09:00+0530", now).timing.earliestReleaseDate).toBe("2026-11-03T04:00:00Z");
+    expect(parseRelease("2026-11-03T09:00-07:00", now).timing.earliestReleaseDate).toBe("2026-11-03T16:00:00Z");
+    expect(parseRelease("2026-11-03 09:00Z", now).timing.earliestReleaseDate).toBe("2026-11-03T09:00:00Z");
   });
 
   test("app.json's release type is the default; SCHEDULED needs a date", () => {
@@ -933,6 +943,22 @@ describe("release flows", () => {
     expect(writes(mock.calls)).toEqual([]);
   });
 
+  test("prepare --build looks for the number within the version", async () => {
+    mock = mockAsc(
+      asc({
+        versions: [live],
+        builds: [
+          { id: "b-old", number: "5", version: "1.3" },
+          { id: "b-new", number: "5", version: "1.4" },
+        ],
+        submissions: [],
+      }),
+    );
+    const result = await prepare(project, { version: "1.4", build: "5", dryRun: true, now: NOW });
+    expect(result.build).toEqual({ id: "b-new", number: "5" });
+    expect(writes(mock.calls)).toEqual([]);
+  });
+
   test("prepare --build with a build of another version", async () => {
     mock = mockAsc(asc({ versions: [live], builds: [{ id: "b30", number: "30", version: "1.3" }], submissions: [] }));
     const error = await rejected(prepare(project, { version: "1.4", build: "30", now: NOW }));
@@ -1011,6 +1037,10 @@ describe("release flows", () => {
       "1.4 (build 37): waiting for review, submitted 2 hours ago. Releases automatically after approval, phased over 7 days.",
       "1.3 is live; phased release day 4 of 7 (10%).",
     ]);
+    // Asking about the live version shows its rollout.
+    const liveOnly = await releaseStatus(project, { version: "1.3", now: NOW });
+    expect(liveOnly.phasedRelease).toMatchObject({ id: "pr13", versionString: "1.3" });
+    expect(statusLines({ ...liveOnly, submission: null }, NOW)).toEqual(["1.3 is live; phased release day 4 of 7 (10%)."]);
   });
 
   test("Apple's 409 on submit comes through with what blocks it", async () => {
@@ -1041,5 +1071,24 @@ describe("release flows", () => {
     const error = await rejected(submit(project, { version: "1.4", now: NOW }));
     expect(error.code).toBe("api-409");
     expect(error.hint).toContain("You must choose an age rating.");
+  });
+});
+
+// MARK: The commands
+
+describe("ship release and ship version arguments", () => {
+  const run = (name: string, args: string[], flags: Record<string, string | boolean> = {}) =>
+    rejected([...releaseCommands, ...versionCommands].find((command) => command.name === name)!.run({ args, flags, implicit: false }));
+
+  test("mistakes are usage errors before anything is loaded or sent", async () => {
+    expect((await run("release", ["prepare"], { release: "yesterday" })).exitCode).toBe(2);
+    expect((await run("release", ["prepare"], { phased: true, "no-phased": true })).details?.choices).toEqual(["--phased", "--no-phased"]);
+    expect((await run("release", ["prepare"], { version: "1.x" })).code).toBe("bad-version");
+    expect((await run("release", ["prepare"], { build: "abc" })).exitCode).toBe(2);
+    expect((await run("release", ["prepare"], { platform: "android" })).details?.choices).toContain("macos");
+    const unknown = await run("release", ["ship-it"]);
+    expect(unknown.exitCode).toBe(2);
+    expect(unknown.details?.choices).toEqual(["status", "prepare", "submit", "go", "cancel", "phased"]);
+    expect((await run("version", ["grow"])).details?.choices).toEqual(["bump", "set"]);
   });
 });
