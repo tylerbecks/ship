@@ -3,11 +3,12 @@
 import { join, relative } from "node:path";
 import { type Build, findBuild, highestBuildNumber, setExemptEncryption } from "../asc/builds";
 import { addBuildToGroup, betaGroups, setWhatToTest, submitForBetaReview } from "../asc/testflight";
-import { archive, checkInfo, exportIPA, ipaInfo, upload, withKeyFile } from "../build";
+import { archive, buildPaths, checkInfo, exportIPA, packageInfo, upload, withKeyFile } from "../build";
 import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
 import { type Commit, type Tagging, commitSetting, drift, headCommit, tagBuild, tagFor } from "../git";
 import { type Command, boolFlag, stringFlag } from "../command";
+import { type AscPlatform, platformInfo } from "../platform";
 import { ShipError, ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
 import { appId, friendly } from "./status";
@@ -56,7 +57,8 @@ export async function beta(options: BetaOptions) {
   // matters before the first upload. (A failed run may have already bumped it.)
   const highest = await highestBuildNumber(id);
   const build = options.build ?? String(highest > 0 ? highest + 1 : ((await localBuild(project)) ?? 0) + 1);
-  const existing = await findBuild(id, build);
+  const platform = platformInfo(project.platform);
+  const existing = await findBuild(id, build, platform.asc);
   const commit = await headCommit(project.root);
   // A build that's already uploaded may not be HEAD, so only a new upload is tagged. An App
   // Playground's archive still rewrites Package.swift's bundleVersion after this snapshot; that line
@@ -73,6 +75,7 @@ export async function beta(options: BetaOptions) {
     commit: commit?.sha ?? null,
     branch: commit?.branch ?? null,
     tag: tagged ? tagFor(build) : null,
+    platform: project.platform,
   };
   ui.ok(`Build ${build}${existing ? " (already uploaded; skipping to distribution)" : ""}`);
 
@@ -91,11 +94,11 @@ export async function beta(options: BetaOptions) {
       ui.step(`Archiving ${project.config.scheme} (Release, build ${build})`);
       await archive(project, build, creds, key, commit && commitSetting(commit));
       ui.ok("Archived");
-      ui.step("Exporting the App Store Connect .ipa");
+      ui.step(`Exporting the App Store Connect ${platform.package}`);
       const ipa = await exportIPA(project, build, creds, key);
       ui.ok(`Exported ${ipa}`);
 
-      const checks = checkInfo(await ipaInfo(ipa), { bundleId: project.config.bundleId, build });
+      const checks = checkInfo(await packageInfo(ipa, buildPaths(project, build).archive), { bundleId: project.config.bundleId, build });
       for (const check of checks) (check.ok ? ui.ok : ui.warn).call(ui, check.message);
       const blocking = checks.slice(0, 2).filter((c) => !c.ok);
       if (blocking.length) {
@@ -196,7 +199,8 @@ interface Distribution {
 }
 
 async function distribute(project: Project, id: string, number: string, options: { notes?: string; external?: boolean }): Promise<Distribution> {
-  const build = await waitForProcessing(id, number);
+  const platform = platformInfo(project.platform).asc;
+  const build = await waitForProcessing(id, number, platform);
   const notes: string[] = [];
 
   if (build.usesNonExemptEncryption == null) {
@@ -249,16 +253,16 @@ async function distribute(project: Project, id: string, number: string, options:
   }
 
   const publicLinks = groups.filter((g) => !g.isInternal && g.publicLinkEnabled && g.publicLink).map((g) => g.publicLink!);
-  return { build: (await findBuild(id, number)) ?? build, groups: added, submittedForReview, publicLinks, notes };
+  return { build: (await findBuild(id, number, platform)) ?? build, groups: added, submittedForReview, publicLinks, notes };
 }
 
 /** Waits for App Store Connect to receive and process a build (usually 5 to 30 minutes). */
-async function waitForProcessing(id: string, number: string): Promise<Build> {
+async function waitForProcessing(id: string, number: string, platform: AscPlatform): Promise<Build> {
   ui.step(`Waiting for App Store Connect to process build ${number}`);
   const deadline = Date.now() + 60 * 60 * 1000;
   let last = "";
   while (Date.now() < deadline) {
-    const build = await findBuild(id, number);
+    const build = await findBuild(id, number, platform);
     const state = build?.processingState ?? "not received yet";
     if (state !== last) {
       ui.note(friendly(state) || state);
@@ -290,7 +294,7 @@ async function localBuild(project: Project): Promise<number | undefined> {
     const value =
       project.config.kind === "swiftpm"
         ? (await packageSettings(project.projectPath)).build
-        : (await appSettings({ kind: project.config.kind, path: project.projectPath }, project.config.scheme)).build;
+        : (await appSettings({ kind: project.config.kind, path: project.projectPath }, project.config.scheme, project.platform)).build;
     const number = Number.parseInt(value ?? "", 10);
     return Number.isFinite(number) ? number : undefined;
   } catch {

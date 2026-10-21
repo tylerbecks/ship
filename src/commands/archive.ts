@@ -1,10 +1,11 @@
 // ship archive: archive and export without uploading.
 
-import { archive, buildPaths, checkInfo, exportIPA, ipaInfo, withKeyFile } from "../build";
+import { archive, buildPaths, checkInfo, exportIPA, packageInfo, withKeyFile } from "../build";
 import { type Command, stringFlag } from "../command";
 import { loadProject } from "../config";
 import { credentials, hasCredentials } from "../credentials";
 import { commitSetting, headCommit } from "../git";
+import { platformInfo } from "../platform";
 import { ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
 
@@ -20,7 +21,7 @@ export async function archiveCommand(options: { app?: string; build?: string }) 
     options.build ??
     (project.config.kind === "swiftpm"
       ? (await packageSettings(project.projectPath)).build
-      : (await appSettings({ kind: project.config.kind, path: project.projectPath }, project.config.scheme)).build) ??
+      : (await appSettings({ kind: project.config.kind, path: project.projectPath }, project.config.scheme, project.platform)).build) ??
     "1";
   const creds = (await hasCredentials()) ? await credentials() : undefined;
   const commit = await headCommit(project.root);
@@ -28,10 +29,10 @@ export async function archiveCommand(options: { app?: string; build?: string }) 
     ui.step(`Archiving ${project.config.scheme} (Release, build ${build})`);
     await archive(project, build, creds, key, commit && commitSetting(commit));
     ui.ok("Archived");
-    ui.step("Exporting the App Store Connect .ipa");
+    ui.step(`Exporting the App Store Connect ${platformInfo(project.platform).package}`);
     return exportIPA(project, build, creds, key);
   });
-  const checks = checkInfo(await ipaInfo(ipa), { bundleId: project.config.bundleId, build });
+  const checks = checkInfo(await packageInfo(ipa, buildPaths(project, build).archive), { bundleId: project.config.bundleId, build });
   for (const check of checks) (check.ok ? ui.ok : ui.warn).call(ui, check.message);
   ui.result({ build, ipa, checks, logs: buildPaths(project, build) }, () => console.log(`Exported ${ipa}`));
 }

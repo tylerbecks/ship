@@ -1,11 +1,12 @@
 // Archiving, exporting, checking, and uploading an app build.
 
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Project } from "./config";
 import type { Credentials } from "./credentials";
 import { run, runOrThrow } from "./exec";
+import { platformInfo } from "./platform";
 import { ShipError, ui } from "./ui";
 import { setPackageBuild, target } from "./xcode";
 
@@ -69,7 +70,7 @@ export async function archive(project: Project, build: string, creds?: Credentia
       ...args,
       "-scheme", project.config.scheme,
       "-configuration", "Release",
-      "-destination", "generic/platform=iOS",
+      "-destination", platformInfo(project.platform).destination,
       "-archivePath", paths.archive,
       "-derivedDataPath", join(project.workDir, "DerivedData"),
       ...authArgs(creds, key),
@@ -84,7 +85,7 @@ export async function archive(project: Project, build: string, creds?: Credentia
   return paths.archive;
 }
 
-/** Exports an App Store Connect .ipa from the archive. */
+/** Exports an App Store Connect package from the archive: an .ipa, or a .pkg for macOS. */
 export async function exportIPA(project: Project, build: string, creds?: Credentials, key?: { path: string }) {
   const paths = buildPaths(project, build);
   const options: Record<string, string | boolean> = {
@@ -116,9 +117,35 @@ export async function exportIPA(project: Project, build: string, creds?: Credent
     ui.note("The API key can't use cloud signing; exporting with the account signed in to Xcode instead");
     await exportWith(authArgs());
   }
-  const ipa = readdirSync(paths.exportDir).find((name) => name.endsWith(".ipa"));
-  if (!ipa) throw new ShipError("The export made no .ipa", "no-ipa", `See ${paths.exportLog}`);
-  return join(paths.exportDir, ipa);
+  const made = findPackage(existsSync(paths.exportDir) ? readdirSync(paths.exportDir) : [], platformInfo(project.platform).package);
+  if (!made) throw new ShipError(`The export made no ${platformInfo(project.platform).package}`, "no-ipa", `See ${paths.exportLog}`);
+  return join(paths.exportDir, made);
+}
+
+/** The exported package among the export folder's files: the platform's kind first, then any .ipa or .pkg. */
+export function findPackage(files: string[], preferred: ".ipa" | ".pkg"): string | undefined {
+  return files.find((name) => name.endsWith(preferred)) ?? files.find((name) => name.endsWith(".ipa") || name.endsWith(".pkg"));
+}
+
+/** The app's Info.plist inside an archive: Products/Applications/<App>.app/Info.plist, or Contents/Info.plist for macOS. */
+export function archiveInfoPlist(archive: string): string | undefined {
+  const apps = join(archive, "Products", "Applications");
+  if (!existsSync(apps)) return undefined;
+  for (const app of readdirSync(apps).filter((name) => name.endsWith(".app")).sort()) {
+    for (const candidate of [join(apps, app, "Contents", "Info.plist"), join(apps, app, "Info.plist")]) {
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** The built app's Info.plist: from the .ipa, or for a .pkg, from the archive it was exported from. */
+export async function packageInfo(path: string, archive: string): Promise<Record<string, unknown>> {
+  if (path.endsWith(".ipa")) return ipaInfo(path);
+  const plistPath = archiveInfoPlist(archive);
+  if (!plistPath) throw new ShipError("The archive has no app Info.plist", "bad-ipa", `Look inside ${archive}/Products/Applications.`);
+  const json = await runOrThrow(["plutil", "-convert", "json", "-o", "-", plistPath], { what: "Reading Info.plist" });
+  return JSON.parse(json.stdout);
 }
 
 /** The app's Info.plist from inside an .ipa. */
@@ -162,11 +189,11 @@ export function checkInfo(info: Record<string, unknown>, expected: { bundleId: s
   ];
 }
 
-/** Uploads an .ipa to App Store Connect with altool and the API key. */
+/** Uploads an .ipa (or a macOS .pkg) to App Store Connect with altool and the API key. */
 export async function upload(project: Project, build: string, ipa: string, creds: Credentials, key: { dir: string }) {
   const paths = buildPaths(project, build);
   const result = await run(
-    ["xcrun", "altool", "--upload-app", "-f", ipa, "-t", "ios", "--apiKey", creds.keyId, "--apiIssuer", creds.issuerId, "--output-format", "json"],
+    ["xcrun", "altool", "--upload-app", "-f", ipa, "-t", platformInfo(project.platform).altool, "--apiKey", creds.keyId, "--apiIssuer", creds.issuerId, "--output-format", "json"],
     { env: { API_PRIVATE_KEYS_DIR: key.dir }, logFile: paths.uploadLog },
   );
   if (result.code !== 0) {
@@ -175,8 +202,9 @@ export async function upload(project: Project, build: string, ipa: string, creds
       const json = JSON.parse(result.stdout.slice(result.stdout.indexOf("{")));
       messages = (json["product-errors"] ?? []).map((e: { message: string }) => e.message);
     } catch {
-      messages = result.stderr.trim().split("\n").slice(-4);
+      messages = [];
     }
+    if (!messages.length) messages = result.stderr.trim().split("\n").filter(Boolean).slice(-4);
     const duplicate = messages.some((m) => /bundle version must be higher|already been used|redundant binary/i.test(m));
     throw new ShipError(
       "Upload failed",
@@ -191,10 +219,17 @@ export async function upload(project: Project, build: string, ipa: string, creds
   ui.note(`Upload log: ${paths.uploadLog}`);
 }
 
-function plist(values: Record<string, string | boolean>): string {
+/** Escapes text for an XML element. */
+export const xmlEscape = (text: string) =>
+  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+
+/** A flat property list of strings and booleans. */
+export function plist(values: Record<string, string | boolean>): string {
   const entries = Object.entries(values)
     .map(([key, value]) =>
-      typeof value === "boolean" ? `\t<key>${key}</key>\n\t<${value}/>` : `\t<key>${key}</key>\n\t<string>${value}</string>`,
+      typeof value === "boolean"
+        ? `\t<key>${xmlEscape(key)}</key>\n\t<${value}/>`
+        : `\t<key>${xmlEscape(key)}</key>\n\t<string>${xmlEscape(value)}</string>`,
     )
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>

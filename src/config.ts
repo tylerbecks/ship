@@ -7,6 +7,8 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { run } from "./exec";
 import { canonicalRoot, checkoutTop, mainCheckout, worktreeRoots } from "./git";
+import { DEFAULT_PLATFORM, PLATFORM_NAMES, type Platform, isPlatform } from "./platform";
+import { STORE_DEFAULT } from "./store/files";
 import { ShipError, ui } from "./ui";
 
 export const CONFIG_FILE = "ship.json";
@@ -29,6 +31,15 @@ export interface ProjectConfig {
     internal?: string[];
     external?: string[];
   };
+  /** ios (default), macos, tvos, or visionos. */
+  platform?: Platform;
+  /** The folder with the App Store page and TestFlight info as files, relative to ship.json. Default "appstore". */
+  store?: string;
+  /** `ship beta` defaults. */
+  beta?: {
+    /** Fill "What to Test" from commit subjects when --notes isn't given. */
+    notesFromGit?: boolean;
+  };
 }
 
 export type ProjectKind = "xcodeproj" | "xcworkspace" | "swiftpm";
@@ -42,6 +53,10 @@ export interface Project {
   projectPath: string;
   /** Where build products and logs go, inside the repo so worktrees never collide. */
   workDir: string;
+  /** The store folder (absolute): ship.json's "store", or appstore/ next to it. */
+  storeDir: string;
+  /** The platform from ship.json, iOS when it doesn't say. */
+  platform: Platform;
 }
 
 // MARK: Machine-level files
@@ -300,11 +315,21 @@ async function projectAt(root: string): Promise<Project> {
       "Run `ship init --force` to detect them again.",
     );
   }
+  if (config.platform !== undefined && !isPlatform(config.platform)) {
+    throw new ShipError(
+      `${join(root, CONFIG_FILE)} has an unknown platform "${String(config.platform)}"`,
+      "bad-config",
+      `Set "platform" to one of ${PLATFORM_NAMES.join(", ")}, or run \`ship init --force\` to detect it.`,
+      { choices: PLATFORM_NAMES },
+    );
+  }
   return {
     root,
     config,
     projectPath: join(root, config.path),
     workDir: join(root, ".ship"),
+    storeDir: resolve(root, config.store || STORE_DEFAULT),
+    platform: config.platform ?? DEFAULT_PLATFORM,
   };
 }
 

@@ -1,7 +1,11 @@
+// Finding Xcode projects, workspaces, and App Playground packages, and
+// reading their schemes and build settings.
+
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { ProjectKind } from "./config";
 import { run, runOrThrow } from "./exec";
+import { type Platform, detectPlatform, platformInfo, supportedPlatforms } from "./platform";
 import { ShipError } from "./ui";
 
 /** An Xcode project, workspace, or App Playground package. */
@@ -70,8 +74,12 @@ export async function listSchemes(container: XcodeContainer): Promise<string[]> 
       result.stderr.trim().split("\n").slice(-3).join("\n  ") || undefined,
     );
   }
-  const json = JSON.parse(result.stdout.slice(result.stdout.indexOf("{")));
-  return (json.project?.schemes ?? json.workspace?.schemes ?? []) as string[];
+  try {
+    const json = JSON.parse(result.stdout.slice(Math.max(0, result.stdout.indexOf("{"))));
+    return (json.project?.schemes ?? json.workspace?.schemes ?? []) as string[];
+  } catch {
+    throw new ShipError(`Couldn't read the schemes in ${basename(container.path)}`, "list-failed", "Open the project in Xcode once (it may need to resolve packages), then try again.");
+  }
 }
 
 /** The app target's settings for a scheme, in the Release configuration. */
@@ -81,30 +89,58 @@ export interface AppSettings {
   teamId?: string;
   version?: string;
   build?: string;
+  /** The platform the target builds for first (iOS before macOS, tvOS, visionOS). */
+  platform?: Platform;
+  /** Every platform the target supports. */
+  platforms?: Platform[];
+  /** The raw settings detection reads (SUPPORTED_PLATFORMS, SDKROOT, SUPPORTS_MACCATALYST). */
+  platformSettings?: Record<string, string | undefined>;
 }
 
-export async function appSettings(container: XcodeContainer, scheme: string): Promise<AppSettings> {
-  const { args, cwd } = target(container);
-  const result = await runOrThrow(
-    ["xcodebuild", "-showBuildSettings", "-json", ...args, "-scheme", scheme, "-configuration", "Release", "-destination", "generic/platform=iOS"],
-    { cwd, what: `Reading build settings for ${scheme}` },
-  );
-  const entries = JSON.parse(result.stdout.slice(result.stdout.indexOf("["))) as {
-    target: string;
-    buildSettings: Record<string, string>;
-  }[];
+/** The app target's entry in `xcodebuild -showBuildSettings -json` output, as AppSettings. */
+export function parseAppSettings(stdout: string, scheme: string): AppSettings {
+  const start = stdout.indexOf("[");
+  let entries: { target: string; buildSettings: Record<string, string> }[];
+  try {
+    entries = JSON.parse(start >= 0 ? stdout.slice(start) : stdout);
+  } catch {
+    throw new ShipError(`Couldn't read the build settings for ${scheme}`, "bad-settings", "Run `xcodebuild -showBuildSettings -scheme <scheme>` to see what's wrong.");
+  }
   const app = entries.find((entry) => entry.buildSettings.PRODUCT_TYPE === "com.apple.product-type.application");
   if (!app) {
     throw new ShipError(`The scheme "${scheme}" doesn't build an app`, "no-app-target", "Pick the scheme that builds your app with --scheme.");
   }
   const settings = app.buildSettings;
+  const platformSettings = {
+    SUPPORTED_PLATFORMS: settings.SUPPORTED_PLATFORMS,
+    SDKROOT: settings.SDKROOT,
+    SUPPORTS_MACCATALYST: settings.SUPPORTS_MACCATALYST,
+  };
   return {
     productName: settings.PRODUCT_NAME ?? app.target,
     bundleId: settings.PRODUCT_BUNDLE_IDENTIFIER ?? "",
     teamId: settings.DEVELOPMENT_TEAM || undefined,
     version: settings.MARKETING_VERSION || undefined,
     build: settings.CURRENT_PROJECT_VERSION || undefined,
+    platform: detectPlatform(platformSettings),
+    platforms: supportedPlatforms(platformSettings),
+    platformSettings,
   };
+}
+
+/**
+ * The app target's settings for a scheme, in the Release configuration, as
+ * built for `platform`. Without one, they're read as the scheme builds by
+ * default, which is how `ship init` detects the platform.
+ */
+export async function appSettings(container: XcodeContainer, scheme: string, platform?: Platform): Promise<AppSettings> {
+  const { args, cwd } = target(container);
+  const destination = platform ? ["-destination", platformInfo(platform).destination] : [];
+  const result = await runOrThrow(
+    ["xcodebuild", "-showBuildSettings", "-json", ...args, "-scheme", scheme, "-configuration", "Release", ...destination],
+    { cwd, what: `Reading build settings for ${scheme}` },
+  );
+  return parseAppSettings(result.stdout, scheme);
 }
 
 // MARK: Packages (.swiftpm)

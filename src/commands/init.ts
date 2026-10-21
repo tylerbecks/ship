@@ -15,9 +15,10 @@ import {
 } from "../config";
 import { type Command, boolFlag, stringFlag } from "../command";
 import { ShipError, ui } from "../ui";
-import { type XcodeContainer, appSettings, findContainers, listSchemes, packageSettings } from "../xcode";
+import { DEFAULT_PLATFORM, type Platform, checkCatalyst, parsePlatform, platformInfo } from "../platform";
+import { type AppSettings, type XcodeContainer, appSettings, findContainers, listSchemes, packageSettings } from "../xcode";
 
-export const initHelp = `ship init [--project <path>] [--scheme <name>] [--force]
+export const initHelp = `ship init [--project <path>] [--scheme <name>] [--platform <name>] [--force]
 
 Sets up the current repo for ship: finds the Xcode project (or .swiftpm
 package), the scheme that builds the app, and its bundle id, then writes
@@ -28,9 +29,11 @@ When there's more than one project or scheme, it says which and how to pick.
 
   --project <path>  The .xcodeproj, .xcworkspace, or .swiftpm to use
   --scheme <name>   The scheme that builds the app
+  --platform <name> ios, macos, tvos, or visionos (detected when left out)
   --force           Replace an existing ship.json`;
 
-export async function init(options: { project?: string; scheme?: string; force?: boolean }) {
+export async function init(options: { project?: string; scheme?: string; platform?: string; force?: boolean }) {
+  const requested = options.platform !== undefined ? parsePlatform(options.platform) : undefined;
   const root = await repoRoot(process.cwd());
   const existing = findConfigRoot(process.cwd());
   if (existing && !options.force) {
@@ -49,7 +52,17 @@ export async function init(options: { project?: string; scheme?: string; force?:
   ui.ok(`Scheme: ${scheme}`);
 
   ui.step("Reading build settings");
-  const settings = container.kind === "swiftpm" ? await packageSettings(container.path) : await appSettings(container, scheme);
+  if (container.kind === "swiftpm" && requested && requested !== "ios") {
+    throw new ShipError("App Playground packages build for iOS only", "usage", "Leave out --platform, or pass --platform ios.", { choices: ["ios"] }, 2);
+  }
+  // Read as the scheme builds by default to see which platforms it supports, then as the chosen one.
+  let settings = container.kind === "swiftpm" ? await packageSettings(container.path) : await appSettings(container, scheme);
+  if (requested && settings.platformSettings) checkCatalyst(requested, settings.platformSettings);
+  const platform = choosePlatform(requested, settings);
+  if (container.kind !== "swiftpm" && (platform !== settings.platform || (settings.platforms?.length ?? 0) > 1)) {
+    settings = { ...(await appSettings(container, scheme, platform)), platforms: settings.platforms };
+  }
+  if (platform !== "ios" || (settings.platforms?.length ?? 0) > 1) ui.ok(`Platform: ${platformInfo(platform).title}`);
   const bundleId = settings.bundleId;
   if (!bundleId) {
     throw new ShipError(`The scheme "${scheme}" has no bundle identifier`, "no-bundle-id", "Set one in Xcode (Signing & Capabilities), then run `ship init` again.");
@@ -62,6 +75,7 @@ export async function init(options: { project?: string; scheme?: string; force?:
     scheme,
     bundleId,
     teamId: settings.teamId,
+    platform,
   };
 
   // With App Store Connect credentials, link the app now so later commands
@@ -87,6 +101,30 @@ export async function init(options: { project?: string; scheme?: string; force?:
     console.log(`Wrote ${CONFIG_FILE}. Commit it, and every clone and worktree is set up too.`);
     if (ignored) console.log("Added .ship/ (build products and logs) to .gitignore.");
   });
+}
+
+/**
+ * The platform to ship: --platform when given, else what the target builds
+ * for first (iOS before macOS, tvOS, visionOS). A target that supports more
+ * than one gets a note about --platform.
+ */
+export function choosePlatform(requested: Platform | undefined, settings: Pick<AppSettings, "platform" | "platforms">): Platform {
+  if (requested) {
+    if (settings.platforms?.length && !settings.platforms.includes(requested)) {
+      throw new ShipError(
+        `The app doesn't build for ${platformInfo(requested).title}`,
+        "bad-platform",
+        `It builds for ${settings.platforms.map((p) => platformInfo(p).title).join(", ")}: ship init --platform ${settings.platforms[0]}`,
+        { choices: settings.platforms },
+        2,
+      );
+    }
+    return requested;
+  }
+  const platform = settings.platform ?? DEFAULT_PLATFORM;
+  const others = (settings.platforms ?? []).filter((p) => p !== platform);
+  if (others.length) ui.note(`It also builds for ${others.map((p) => platformInfo(p).title).join(", ")}; pick one with --platform.`);
+  return platform;
 }
 
 function pickContainer(root: string, project?: string): XcodeContainer {
@@ -152,7 +190,8 @@ export const commands: Command[] = [
     name: "init",
     index: [{ section: "setup", label: "init", summary: "Find the app's project and scheme; write ship.json" }],
     help: initHelp,
-    flags: { project: { type: "string" }, scheme: { type: "string" }, force: { type: "boolean" } },
-    run: (ctx) => init({ project: stringFlag(ctx, "project"), scheme: stringFlag(ctx, "scheme"), force: boolFlag(ctx, "force") }),
+    flags: { project: { type: "string" }, scheme: { type: "string" }, platform: { type: "string" }, force: { type: "boolean" } },
+    run: (ctx) =>
+      init({ project: stringFlag(ctx, "project"), scheme: stringFlag(ctx, "scheme"), platform: stringFlag(ctx, "platform"), force: boolFlag(ctx, "force") }),
   },
 ];

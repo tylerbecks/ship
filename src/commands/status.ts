@@ -7,6 +7,7 @@ import { type Project, loadApps, loadProject, projectFor } from "../config";
 import { hasCredentials } from "../credentials";
 import { type Since, buildCommits, describeSince, fetchBuildTags, sinceBuild } from "../git";
 import { type Command, boolFlag, intFlag } from "../command";
+import { platformInfo } from "../platform";
 import { ShipError, table, ui } from "../ui";
 
 export const statusHelp = `ship status [--app <name>] [--all] [--limit <n>]
@@ -64,7 +65,8 @@ export async function status(options: { app?: string; all?: boolean; limit?: num
   const results: { name: string; bundleId: string; appId: string; builds: TaggedBuild[]; groups: BetaGroup[]; since: Since | null }[] = [];
   for (const project of projects) {
     const id = await appId(project);
-    const [builds, groups] = await Promise.all([recentBuilds(id, options.limit ?? 5), betaGroups(id), fetchBuildTags(project.root)]);
+    const platform = platformInfo(project.platform).asc;
+    const [builds, groups] = await Promise.all([recentBuilds(id, options.limit ?? 5, platform), betaGroups(id), fetchBuildTags(project.root)]);
     const commits = await buildCommits(project.root);
     const tagged = builds.map((b) => ({ ...b, commit: commits.get(b.number) ?? null }));
     const newest = tagged.find((b) => b.commit);
