@@ -110,7 +110,35 @@ Build products and logs go in the repo's `.ship/` folder (git-ignored), so workt
 ## Builds
 
 <!-- feature:builds -->
-(Coming: ship builds.)
+`ship builds` lists the app's builds, newest first: the commit each came from, processing, internal and external TestFlight state, and when it expires (TestFlight builds last 90 days). Expired builds are hidden unless you pass `--expired` or `--all`; `--version 1.2`, `--processing`, `--failed`, and `--limit` narrow the list. `ship status` shows the same EXPIRES column and says when the newest build expires within a week.
+
+`ship builds show 42` prints one build in detail: What to Test for each language, the groups it's in, Beta App Review, and the App Store version it's attached to. Build numbers only have to be unique within a version, so when two versions share one, pass `--version`.
+
+`ship builds expire` takes builds out of TestFlight. Testers can't install them anymore, and it can't be undone:
+
+```
+ship builds expire 41 42                        # these builds
+ship builds expire --older-than 30d --dry-run   # what would go (30d, 2w, 12h)
+ship builds expire --older-than 30d --keep 3    # keep the newest 3 valid builds (default 1)
+```
+
+Builds still processing are skipped, and a build attached to an App Store version that's in review, waiting to release, or live is never expired (naming one is an error, `build-in-use`). If Apple refuses partway, the error lists the builds already expired.
+
+**What to Test from git.** `ship beta --notes-from-git` fills What to Test with the commit subjects since the previous TestFlight build: the newest `testflight/<build>` tag in the commit's history, or the last 30 commits when there's none. Subjects are cleaned for testers: emoji and `:gitmoji:` codes, `feat(scope)!:` prefixes, and `(#123)` go, and chores (chore, ci, test, docs, style, build, refactor) and merges are left out.
+
+```
+🚀 feat: tag each TestFlight upload with its commit (#1)     →  • Tag each TestFlight upload with its commit
+🐛 fix: skip internal groups that get every build            →  • Skip internal groups that get every build
+🧹 chore: bump dependencies                                  →  (left out)
+```
+
+`--notes-file notes.md` reads notes from a file (`-` for stdin). They combine in order: `--notes`, then the file, then git's, with a blank line between; What to Test holds 4,000 characters, so git's list is cut to fit with "…and N more". `ship distribute <build>` takes the same flags and lists the commits up to that build's tag. To use git's notes whenever no notes are given, add to `ship.json`:
+
+```json
+"beta": { "notesFromGit": true }
+```
+
+`--dry-run` shows the notes, and `--json` reports them as `plan.notes`, with `plan.notesSource` (`flag`, `file`, `git`, or a mix like `flag+git`) and `plan.notesFrom` (the previous build).
 <!-- /feature:builds -->
 
 ## For agents
