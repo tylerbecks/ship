@@ -52,7 +52,8 @@ function authArgs(creds?: Credentials, key?: { path: string }): string[] {
 }
 
 /** Archives the app as a Release build with the given build number. */
-export async function archive(project: Project, build: string, creds?: Credentials, key?: { path: string }) {
+/** `commit` becomes the SHIP_COMMIT build setting; an Info.plist can read it as `$(SHIP_COMMIT)`. */
+export async function archive(project: Project, build: string, creds?: Credentials, key?: { path: string }, commit?: string) {
   const paths = buildPaths(project, build);
   rmSync(paths.dir, { recursive: true, force: true });
   mkdirSync(paths.dir, { recursive: true });
@@ -76,6 +77,7 @@ export async function archive(project: Project, build: string, creds?: Credentia
       ...(process.env.SHIP_JOBS ? ["-jobs", process.env.SHIP_JOBS] : []),
       // Projects read the build number from this setting.
       `CURRENT_PROJECT_VERSION=${build}`,
+      ...(commit ? [`SHIP_COMMIT=${commit}`] : []),
     ],
     { cwd, logFile: paths.archiveLog, what: "Archiving" },
   );

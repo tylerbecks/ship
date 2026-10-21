@@ -4,6 +4,7 @@ import { archive, buildPaths, checkInfo, exportIPA, ipaInfo, withKeyFile } from 
 import { CONFIG_FILE, findConfigRoot, loadProject, loadSettings, saveSettings, settingsPath } from "../config";
 import { type Credentials, credentials, hasCredentials, resolveValue, serviceAccountToken } from "../credentials";
 import { run } from "../exec";
+import { commitSetting, headCommit } from "../git";
 import { cacheExpiry, clearCached, clearServiceAccountToken, writeServiceAccountToken } from "../keychain";
 import { ShipError, table, ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
@@ -26,9 +27,10 @@ export async function archiveCommand(options: { app?: string; build?: string }) 
       : (await appSettings({ kind: project.config.kind, path: project.projectPath }, project.config.scheme)).build) ??
     "1";
   const creds = (await hasCredentials()) ? await credentials() : undefined;
+  const commit = await headCommit(project.root);
   const ipa = await withKeyFile(creds, async (key) => {
     ui.step(`Archiving ${project.config.scheme} (Release, build ${build})`);
-    await archive(project, build, creds, key);
+    await archive(project, build, creds, key, commit && commitSetting(commit));
     ui.ok("Archived");
     ui.step("Exporting the App Store Connect .ipa");
     return exportIPA(project, build, creds, key);

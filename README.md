@@ -4,7 +4,7 @@ Build, upload, and manage TestFlight (and later the App Store) from the command 
 
 ```
 ship init          # once per repo: finds the project, scheme, and bundle id → ship.json
-ship               # recent builds, TestFlight state, groups, public links
+ship               # recent builds, their commits, TestFlight state, groups, public links
 ship beta --notes "Fixes search"            # next build → archive → upload → TestFlight
 ship beta --external --notes "…"            # …and Beta App Review for the public link
 ship testers add friend@example.com
@@ -35,16 +35,32 @@ Values can be literal, `op://` (1Password), `env:NAME`, or `file:<path>`. Settin
 
 ## How `ship beta` works
 
-1. Picks the build number: one above the highest in App Store Connect (or `--build`).
+1. Picks the build number: one above the highest in App Store Connect (or `--build`), and checks that there are no uncommitted changes.
 2. Archives a Release build and exports an **App Store Connect** .ipa (never "TestFlight Internal Only", which can't go to external testers or the App Store).
 3. Checks the bundle id, build number, and export compliance key in the built app.
-4. Uploads with `altool`, waits for processing, and answers export compliance if the app doesn't declare it.
+4. Uploads with `altool` and tags the commit `testflight/<build>` (see below), then waits for processing and answers export compliance if the app doesn't declare it.
 5. Sets "What to Test" and adds the build to the internal groups.
 6. With `--external`, adds it to the external groups and submits it to Beta App Review.
 
 It's safe to re-run: an uploaded build isn't uploaded again. `ship distribute <build>` redoes only steps 4–6.
 
-For App Playground packages, the build number is written to `Package.swift`'s `bundleVersion`; commit it. For Xcode projects, it's passed as `CURRENT_PROJECT_VERSION` at archive time, so no files change.
+## Which commit is in TestFlight
+
+App Store Connect has no field for a commit, so the repo keeps the record. `ship beta` tags the commit it built `testflight/<build>` and pushes the tag to origin (which also pushes the commit, if it wasn't). `ship status` fetches those tags, shows each build's commit, and says how far origin's default branch has moved since the newest one:
+
+```
+origin/main has 7 commits since build 202610210930 (6cb9262): git log --oneline 6cb9262..origin/main
+```
+
+So a build always matches a commit, `ship beta` stops when there are uncommitted changes (untracked files included, since Xcode builds files it finds in synced folders). `--allow-dirty` ships them anyway and skips the tag; it's also what ships a project that isn't in git, or has no commit yet. It also warns when the commit isn't on the default branch yet, like a PR branch that will be squashed.
+
+The commit reaches the build as the `SHIP_COMMIT` build setting (with `-dirty` added for `--allow-dirty`). To show it in the app, add a key such as `ShipCommit` with the value `$(SHIP_COMMIT)` to the Info.plist.
+
+To record a build ship didn't upload: `git tag testflight/<build> <commit> && git push origin testflight/<build>`.
+
+## Build numbers and products
+
+For App Playground packages, the build number is written to `Package.swift`'s `bundleVersion` during the archive; commit it before the next `ship beta`. The tagged commit has the previous number there, and the tag's name is the one that shipped. For Xcode projects, it's passed as `CURRENT_PROJECT_VERSION` at archive time, so no files change.
 
 Build products and logs go in the repo's `.ship/` folder (git-ignored), so worktrees never collide. `SHIP_JOBS=4` limits parallel compile jobs.
 
