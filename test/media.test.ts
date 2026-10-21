@@ -346,7 +346,7 @@ describe("the store folder", () => {
     expect(find(P("05-broken.jpg"))).toEqual(["error: This isn't a PNG or JPEG image ship can read."]);
     expect(find(P("06-empty.png"))).toEqual(["error: The file is empty."]);
     expect(find("en-US/screenshots/IPHONE_67")[0]).toContain('"IPHONE_67" isn\'t a screenshot display type. Did you mean APP_IPHONE_67?');
-    expect(find("en-US/screenshots/APP_DESKTOP")[0]).toBe('warning: APP_DESKTOP is for macOS apps, and this one is iOS (ship.json "platform").');
+    expect(find("en-US/screenshots/APP_DESKTOP")[0]).toBe('warning: APP_DESKTOP is for macOS apps; pushing for iOS skips it (pass --platform macos to push it).');
     expect(find("xx-YY/previews")[0]).toStartWith("warning: xx-YY isn't a language");
     expect(find("xx-YY/previews/APP_IPHONE_67")[0]).toContain("Did you mean IPHONE_67?");
 
@@ -644,6 +644,19 @@ describe("push and pull", () => {
     expect(result).toMatchObject({ applied: false, dryRun: true, uploaded: [] });
     expect(result.changes).toEqual([{ scope: "en-US/screenshots/APP_IPHONE_67", field: "01-home.png", kind: "add", to: md5(png(1290, 2796)) }]);
     expect(mock.calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  test("a folder shared by platforms pushes only the chosen platform's sets", async () => {
+    const p = await project();
+    const phone = png(1290, 2796);
+    const mac = png(2880, 1800);
+    addFile(p, P("01-home.png"), phone);
+    addFile(p, "en-US/screenshots/APP_DESKTOP/01-home.png", mac);
+    mock = fakeAsc();
+    const ios = await syncMedia(p, { appId: "APP", dryRun: true });
+    expect(ios.changes).toEqual([{ scope: "en-US/screenshots/APP_IPHONE_67", field: "01-home.png", kind: "add", to: md5(phone) }]);
+    const macos = await syncMedia(p, { appId: "APP", dryRun: true, platform: "macos" });
+    expect(macos.changes).toEqual([{ scope: "en-US/screenshots/APP_DESKTOP", field: "01-home.png", kind: "add", to: md5(mac) }]);
   });
 
   test("push refuses a version that isn't being prepared", async () => {

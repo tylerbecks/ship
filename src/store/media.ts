@@ -522,7 +522,7 @@ export async function validateMedia(storeDir: string, options: MediaFilter & { p
       problems.push({
         file: folder,
         severity: "warning",
-        message: `${set.type} is for ${platformInfo(platform).title} apps, and this one is ${platformInfo(options.platform).title} (ship.json "platform").`,
+        message: `${set.type} is for ${platformInfo(platform).title} apps; pushing for ${platformInfo(options.platform).title} skips it (pass --platform ${platform} to push it).`,
       });
     }
     for (const path of set.ignored) {
@@ -656,10 +656,14 @@ async function compare(project: Project, version: AppStoreVersion, media: LocalM
   const lock = await readLock(project.storeDir);
   const localizations = await versionLocalizations(version.id);
   const plans: Planned[] = [];
+  // A store folder shared by several platforms holds every platform's sets; only this version's platform is pushed.
+  const platform = platformOf(project, options);
   for (const { locale, kind } of media.managed) {
     const localization = localizations.find((item) => item.locale === locale);
     const remoteSets = localization ? (await mediaSets(kind, localization.id)).filter((set) => wanted(options.types, set.type)) : [];
-    const localSets = media.sets.filter((set) => set.locale === locale && set.kind === kind && isKnownType(kind, set.type));
+    const localSets = media.sets.filter(
+      (set) => set.locale === locale && set.kind === kind && isKnownType(kind, set.type) && typePlatform(set.type) === platform,
+    );
     for (const local of localSets) {
       await hashSet(local);
       const set = remoteSets.find((item) => item.type === local.type);
