@@ -11,11 +11,12 @@ import {
 import { archive, checkInfo, exportIPA, ipaInfo, upload, withKeyFile } from "../build";
 import { type Project, loadProject } from "../config";
 import { credentials } from "../credentials";
+import { type Commit, type Tagging, commitSetting, headCommit, tagBuild, tagFor } from "../git";
 import { ShipError, ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
 import { appId, friendly } from "./status";
 
-export const betaHelp = `ship beta [--notes <text>] [--external] [--build <n>] [--no-wait] [--dry-run]
+export const betaHelp = `ship beta [--notes <text>] [--external] [--build <n>] [--no-wait] [--dry-run] [--allow-dirty]
 
 Ships a TestFlight build in one go:
   1. picks the next build number (one above the highest in App Store Connect)
@@ -26,6 +27,9 @@ Ships a TestFlight build in one go:
   6. with --external, adds it to the external groups and submits it to
      Beta App Review (needed before the public link works)
 
+It ships only committed code: it tags the commit testflight/<build> and
+pushes the tag, so \`ship status\` and git know what each build contains.
+
 Safe to re-run: a build that's already uploaded isn't uploaded again; use
 \`ship distribute <build>\` to redo only steps 4 to 6.
 
@@ -33,7 +37,8 @@ Safe to re-run: a build that's already uploaded isn't uploaded again; use
   --external       Also send it to external testers
   --build <n>      Use this build number instead of the next one
   --no-wait        Stop after the upload; finish later with \`ship distribute\`
-  --dry-run        Show the plan without building or uploading`;
+  --dry-run        Show the plan without building or uploading
+  --allow-dirty    Ship uncommitted changes too (the build isn't tagged)`;
 
 export interface BetaOptions {
   app?: string;
@@ -42,6 +47,7 @@ export interface BetaOptions {
   build?: string;
   wait?: boolean;
   dryRun?: boolean;
+  allowDirty?: boolean;
 }
 
 export async function beta(options: BetaOptions) {
@@ -55,6 +61,10 @@ export async function beta(options: BetaOptions) {
   const highest = await highestBuildNumber(id);
   const build = options.build ?? String(highest > 0 ? highest + 1 : ((await localBuild(project)) ?? 0) + 1);
   const existing = await findBuild(id, build);
+  const commit = await headCommit(project.root);
+  // A build that's already uploaded may not be HEAD, so only a new upload is tagged.
+  const tagged = !existing && commit && !commit.changes.length;
+  if (!existing && commit) checkCommit(commit, Boolean(options.allowDirty));
   const plan = {
     app: project.config.name,
     bundleId: project.config.bundleId,
@@ -62,6 +72,9 @@ export async function beta(options: BetaOptions) {
     upload: !existing,
     external: Boolean(options.external),
     notes: options.notes ?? null,
+    commit: commit?.sha ?? null,
+    branch: commit?.branch ?? null,
+    tag: tagged ? tagFor(build) : null,
   };
   ui.ok(`Build ${build}${existing ? " (already uploaded; skipping to distribution)" : ""}`);
 
@@ -69,14 +82,16 @@ export async function beta(options: BetaOptions) {
     ui.result({ dryRun: true, plan }, () => {
       console.log(`Would ${existing ? "distribute" : "archive, upload, and distribute"} ${project.config.name} build ${build}.`);
       console.log(`Internal groups: yes. External groups and Beta App Review: ${options.external ? "yes" : "no"}.`);
+      if (plan.tag) console.log(`Would tag ${commit!.short} as ${plan.tag}.`);
     });
     return;
   }
 
+  let tag: Tagging | null = null;
   if (!existing) {
     await withKeyFile(creds, async (key) => {
       ui.step(`Archiving ${project.config.scheme} (Release, build ${build})`);
-      await archive(project, build, creds, key);
+      await archive(project, build, creds, key, commit && commitSetting(commit));
       ui.ok("Archived");
       ui.step("Exporting the App Store Connect .ipa");
       const ipa = await exportIPA(project, build, creds, key);
@@ -93,17 +108,43 @@ export async function beta(options: BetaOptions) {
       await upload(project, build, ipa, creds, key!);
       ui.ok("Uploaded");
     });
+    if (tagged) tag = await tagCommit(project, build, commit);
   }
 
   if (options.wait === false) {
-    ui.result({ plan, uploaded: true, distributed: false }, () => {
+    ui.result({ plan, tag, uploaded: true, distributed: false }, () => {
       console.log(`Uploaded build ${build}. When it's processed, run: ship distribute ${build}${options.external ? " --external" : ""}`);
     });
     return;
   }
 
   const result = await distribute(project, id, build, options);
-  ui.result({ plan, ...result }, () => printDistribution(project, build, result));
+  ui.result({ plan, tag, ...result }, () => printDistribution(project, build, result));
+}
+
+/** Stops an upload of uncommitted changes, which no commit could describe, unless --allow-dirty. */
+function checkCommit(commit: Commit, allowDirty: boolean) {
+  if (commit.changes.length) {
+    if (!allowDirty) {
+      throw new ShipError(
+        `There ${commit.changes.length === 1 ? "is 1 uncommitted change" : `are ${commit.changes.length} uncommitted changes`}`,
+        "uncommitted-changes",
+        `Commit or stash them, so the build matches a commit it can be tagged with. To ship them anyway, untagged, pass --allow-dirty.\n  ${commit.changes.slice(0, 8).join("\n  ")}`,
+        { changes: commit.changes },
+      );
+    }
+    ui.warn(`Shipping uncommitted changes on top of ${commit.short}; the build won't be tagged`);
+  }
+  if (commit.defaultBranch && !commit.onDefaultBranch) {
+    ui.warn(`${commit.short} (${commit.branch ?? "detached HEAD"}) isn't on ${commit.defaultBranch} yet`);
+  }
+}
+
+async function tagCommit(project: Project, build: string, commit: Commit): Promise<Tagging> {
+  const tag = await tagBuild(project.root, build, commit.sha);
+  for (const warning of tag.warnings) ui.warn(warning);
+  if (!tag.warnings.length) ui.ok(`Tagged ${commit.short} as ${tag.tag}${tag.pushed ? " and pushed it" : ""}`);
+  return tag;
 }
 
 export const distributeHelp = `ship distribute <build> [--notes <text>] [--external]

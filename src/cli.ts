@@ -92,6 +92,7 @@ async function main(argv: string[]) {
       build: { type: "string" },
       "no-wait": { type: "boolean" },
       "dry-run": { type: "boolean" },
+      "allow-dirty": { type: "boolean" },
     },
     distribute: { notes: { type: "string" }, external: { type: "boolean" } },
     testers: { group: { type: "string" } },
@@ -142,6 +143,7 @@ async function main(argv: string[]) {
         build: v.build as string,
         wait: !v["no-wait"],
         dryRun: Boolean(v["dry-run"]),
+        allowDirty: Boolean(v["allow-dirty"]),
       });
     case "distribute": {
       const build = positionals[0];

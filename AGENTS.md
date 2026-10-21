@@ -10,6 +10,7 @@
 - `src/build.ts`: archive, export, .ipa checks, and upload
 - `src/xcode.ts`: finding projects, schemes, and settings
 - `src/config.ts`: ship.json, the machine's app list, and settings
+- `src/git.ts`: the commit a build comes from, and the `testflight/<build>` tags that record it
 - `src/ui.ts`: output; every error is a `ShipError` with a code and a hint
 
 ## Rules

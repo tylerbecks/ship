@@ -1,13 +1,18 @@
 import { type BetaGroup, type Build, betaGroups, lookupApp, recentBuilds } from "../asc/api";
 import { type Project, loadApps, loadProject } from "../config";
 import { hasCredentials } from "../credentials";
+import { type Since, buildCommits, describeSince, fetchBuildTags, sinceBuild } from "../git";
 import { ShipError, table, ui } from "../ui";
 
 export const statusHelp = `ship status [--app <name>] [--all] [--limit <n>]
 
-Shows the app's recent builds (processing, internal and external TestFlight
-state, expiry) and its TestFlight groups with their public links. This is
-also what plain \`ship\` runs.
+Shows the app's recent builds (the commit each came from, processing,
+internal and external TestFlight state) and its TestFlight groups with their
+public links. This is also what plain \`ship\` runs.
+
+Commits come from the testflight/<build> tags \`ship beta\` pushes; status
+fetches them from origin first. It also says how far the default branch has
+moved since the newest tagged build.
 
   --all        Every app on this machine (see \`ship apps\`)
   --limit <n>  How many builds to show (default 5)`;
@@ -38,33 +43,45 @@ export async function status(options: { app?: string; all?: boolean; limit?: num
     ? await Promise.all((await loadApps()).map((app) => loadProject({ app: app.name })))
     : [await loadProject({ app: options.app })];
 
-  const results: { name: string; bundleId: string; appId: string; builds: Build[]; groups: BetaGroup[] }[] = [];
+  const results: { name: string; bundleId: string; appId: string; builds: TaggedBuild[]; groups: BetaGroup[]; since: Since | null }[] = [];
   for (const project of projects) {
     const id = await appId(project);
-    const [builds, groups] = await Promise.all([recentBuilds(id, options.limit ?? 5), betaGroups(id)]);
-    results.push({ name: project.config.name, bundleId: project.config.bundleId, appId: id, builds, groups });
+    const [builds, groups] = await Promise.all([recentBuilds(id, options.limit ?? 5), betaGroups(id), fetchBuildTags(project.root)]);
+    const commits = await buildCommits(project.root);
+    const tagged = builds.map((b) => ({ ...b, commit: commits.get(b.number) ?? null }));
+    const newest = tagged.find((b) => b.commit);
+    const since = newest ? ((await sinceBuild(project.root, newest.number, newest.commit!)) ?? null) : null;
+    results.push({ name: project.config.name, bundleId: project.config.bundleId, appId: id, builds: tagged, groups, since });
   }
 
   ui.result({ apps: results }, () => {
     for (const app of results) {
       if (results.length > 1) console.log(`\n${app.name} (${app.bundleId})`);
       printBuilds(app.builds);
+      if (app.since) console.log(`\n${describeSince(app.since)}`);
+      else if (app.builds.length && !app.builds.some((b) => b.commit)) {
+        console.log("\nNo build is tagged with its commit yet. `ship beta` tags each upload testflight/<build>.");
+      }
       printGroups(app.groups);
     }
   });
 }
 
-export function printBuilds(builds: Build[]) {
+/** A build and the commit it was uploaded from, when it's tagged. */
+type TaggedBuild = Build & { commit: string | null };
+
+export function printBuilds(builds: TaggedBuild[]) {
   if (!builds.length) {
     console.log("No builds yet. Upload one with `ship beta`.");
     return;
   }
   console.log(
     table([
-      ["BUILD", "VERSION", "UPLOADED", "PROCESSING", "INTERNAL", "EXTERNAL"],
+      ["BUILD", "VERSION", "COMMIT", "UPLOADED", "PROCESSING", "INTERNAL", "EXTERNAL"],
       ...builds.map((b) => [
         b.number,
         b.version ?? "",
+        b.commit?.slice(0, 7) ?? "",
         new Date(b.uploadedDate).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
         b.expired ? "expired" : friendly(b.processingState),
         friendly(b.internalState),
