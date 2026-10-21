@@ -9,9 +9,10 @@
 //   file:~/path                    a file
 
 import { homedir } from "node:os";
-import { settingsPath } from "./config";
+import { basename, relative, resolve } from "node:path";
+import { type Settings, loadSettings, settingsPath, shipHome } from "./config";
 import { NOT_FOUND, type RunResult, run } from "./exec";
-import { KEYCHAIN_NAME, readGenericPassword, readServiceAccountToken } from "./keychain";
+import { KEYCHAIN_NAME, isShipItem, readGenericPassword, readServiceAccountToken } from "./keychain";
 import { ShipError } from "./ui";
 
 export interface SecretContext {
@@ -191,6 +192,64 @@ export function sourceOf(value: string): SecretSource {
 /** A reference rather than an inline secret: op://, keychain:, env:, or file:. Store files require this for passwords. */
 export function isSecretReference(value: string): boolean {
   return sourceOf(value) !== literal;
+}
+
+// MARK: Store-folder passwords
+
+/** An op:// reference's vault and item, so another field of the same item counts as the same secret. */
+const opItem = (value: string) => value.split("/").slice(2, 4).join("/").toLowerCase();
+
+const inside = (dir: string, path: string) => {
+  const rel = relative(resolve(dir), path);
+  return rel === "" || (!rel.startsWith("..") && !rel.startsWith("/"));
+};
+
+/**
+ * Why a store-folder password reference names one of ship's own secrets, or
+ * undefined when it doesn't: ship's Keychain items (the API key, its cached
+ * copy, the 1Password token), the environment variables and files CI keeps
+ * them in, an API key file (.p8), anything in ship's settings folder, and
+ * the references in `settings`. Push sends the password to App Store
+ * Connect, where anyone with App Review access can read it, so whoever can
+ * commit to the repo could otherwise read the API key that way.
+ */
+export function ownSecretReason(value: string, settings: Settings = {}): string | undefined {
+  const credentials = Object.values(settings.credentials ?? {}).filter((ref): ref is string => typeof ref === "string" && Boolean(ref));
+  if (credentials.includes(value)) return "it's one of ship's App Store Connect credentials";
+  if (value.startsWith("op://") && credentials.some((ref) => ref.startsWith("op://") && opItem(ref) === opItem(value))) {
+    return "it's the 1Password item ship reads the API key from";
+  }
+  const keychain = parseKeychainRef(value);
+  if (keychain && isShipItem(keychain.service, keychain.account)) return "it's ship's own Keychain item for the API key or the 1Password token";
+  if (value.startsWith("env:")) {
+    const name = value.slice("env:".length).toUpperCase();
+    if (name.startsWith("SHIP_ASC_") || name === "OP_SERVICE_ACCOUNT_TOKEN") return `${name} holds ship's own credentials`;
+  }
+  if (value.startsWith("file:")) {
+    const path = resolve(expandHome(value.slice("file:".length)));
+    const keyPath = process.env.SHIP_ASC_PRIVATE_KEY_PATH;
+    if (basename(path).toLowerCase().endsWith(".p8") || (keyPath && resolve(expandHome(keyPath)) === path)) return "it's an App Store Connect API key file";
+    if (inside(shipHome, path)) return "it's in ship's settings folder";
+  }
+  return undefined;
+}
+
+/** The error for a store password that names one of ship's own secrets. */
+export function ownSecretError(value: string, reason: string, field = "demoAccountPassword"): ShipError {
+  return new ShipError(
+    `${field} can't be ${value}: ${reason}, and push would send it to App Store Connect`,
+    "own-secret",
+    "Save the demo password under its own name with `ship secret set keychain:ship/<app>-demo-password --stdin`, and point at that instead.",
+    { reference: value },
+  );
+}
+
+/** A store folder's password: the secret its reference names, refusing ship's own secrets. Never logged. */
+export async function resolveStorePassword(value: string): Promise<string> {
+  const settings = await loadSettings();
+  const reason = ownSecretReason(value, settings);
+  if (reason) throw ownSecretError(value, reason);
+  return (await resolveSecret(value, { opAccount: settings.opAccount })) ?? "";
 }
 
 /** The secret a value names (or the value itself, when it's literal). undefined stays undefined. */

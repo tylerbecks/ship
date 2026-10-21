@@ -5,7 +5,7 @@ import { bearerToken } from "../asc/client";
 import { type Command, boolFlag, stringFlag } from "../command";
 import { loadSettings, saveSettings, settingsPath } from "../config";
 import { type Credentials, credentialSources, credentials, resolveValue, serviceAccountToken, useCredentials } from "../credentials";
-import { cacheExpiry, checkKeychainName, clearCached, clearServiceAccountToken, writeGenericPassword, writeServiceAccountToken } from "../keychain";
+import { ASC_KEY_ACCOUNT_PREFIX, cacheExpiry, checkKeychainName, clearCached, clearServiceAccountToken, writeGenericPassword, writeServiceAccountToken } from "../keychain";
 import { normalizePrivateKey, opFailed, runOp } from "../secrets";
 import { ShipError, ui } from "../ui";
 
@@ -50,7 +50,11 @@ reads the token (one last Touch ID), checks it, and keeps it in the Keychain.
 Only ship's own \`op\` calls use it, so your shell's \`op\` is unaffected.`;
 
 /** The Keychain item `ship auth set --keychain` keeps a key's .p8 in. */
-export const keychainKeyRef = (keyId: string) => ({ service: "ship", account: `asc-private-key-${keyId}`, ref: `keychain:ship/asc-private-key-${keyId}` });
+export const keychainKeyRef = (keyId: string) => ({
+  service: "ship",
+  account: `${ASC_KEY_ACCOUNT_PREFIX}${keyId}`,
+  ref: `keychain:ship/${ASC_KEY_ACCOUNT_PREFIX}${keyId}`,
+});
 
 export async function auth(
   action: string,

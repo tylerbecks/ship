@@ -60,10 +60,9 @@ import {
   pickVersion,
 } from "../asc/versions";
 import type { Project } from "../config";
-import { loadSettings } from "../config";
 import { type Change, MASK, changesJSON, diffRecord } from "../diff";
 import { type AscPlatform, platformInfo } from "../platform";
-import { isSecretReference, resolveSecret } from "../secrets";
+import { isSecretReference, resolveStorePassword } from "../secrets";
 import { ShipError, ui } from "../ui";
 import type { Problem } from "./check";
 import { type PushResult, type StoreApp, localeDirs, orderStoreApp, readText, writeStoreApp, writeText } from "./files";
@@ -649,7 +648,7 @@ export async function reviewPassword(local: LocalMetadata, strict: boolean): Pro
   const reference = local.app?.review?.demoAccountPassword;
   if (!reference || !isSecretReference(reference)) return undefined;
   try {
-    return { value: await resolveSecret(reference, { opAccount: (await loadSettings()).opAccount }) };
+    return { value: await resolveStorePassword(reference) };
   } catch (error) {
     if (strict || !(error instanceof ShipError)) throw error;
     return { error: error.message };

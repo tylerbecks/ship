@@ -582,6 +582,11 @@ describe("testflight test information", () => {
     const error = await rejects(() => testflight(ctx(["push"])));
     expect(error).toMatchObject({ code: "invalid-store" });
     expect(error.message).toContain("keychain:ship needs an account");
+    // Nor ship's own items, which push would send to App Store Connect.
+    writeFileSync(join(dir, "review.json"), JSON.stringify({ demoAccountRequired: true, demoAccountName: "a@example.com", demoAccountPassword: "keychain:ship/asc-private-key-ABC" }));
+    const own = await rejects(() => testflight(ctx(["push"])));
+    expect(own).toMatchObject({ code: "invalid-store" });
+    expect(own.message).toContain("ship's own Keychain item");
     expect(mock.calls).toEqual([]);
   });
 

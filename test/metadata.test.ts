@@ -256,6 +256,19 @@ describe("validate", () => {
     expect(checkAppJson(JSON.stringify({ review: { demoAccountPassword: "keychain:ship" } }))).toMatchObject([
       { severity: "error", field: "review.demoAccountPassword", message: expect.stringContaining("needs an account") },
     ]);
+    // Nor may it name ship's own secrets: push would send the API key to App Store Connect.
+    for (const own of [
+      "keychain:ship/asc-private-key-ABC123",
+      "keychain:ship/app-store-connect-api-key",
+      "keychain:Ship/op-service-account-token",
+      "env:SHIP_ASC_PRIVATE_KEY",
+      "env:OP_SERVICE_ACCOUNT_TOKEN",
+      "file:~/Downloads/AuthKey_ABC123.p8",
+    ]) {
+      expect(checkAppJson(JSON.stringify({ review: { demoAccountPassword: own } }))).toMatchObject([
+        { severity: "error", field: "review.demoAccountPassword", message: expect.stringContaining("ship secret set keychain:ship/<app>-demo-password --stdin") },
+      ]);
+    }
     // Leaving the password out keeps App Store Connect's: a warning, not an error.
     expect(checkAppJson(JSON.stringify({ review: { demoAccountRequired: true, demoAccountName: "a" } }))[0]?.severity).toBe("warning");
     expect(checkAppJson(JSON.stringify({ review: { demoAccountRequired: true, demoAccountName: "a", demoAccountPassword: null } }))[0]?.severity).toBe("error");

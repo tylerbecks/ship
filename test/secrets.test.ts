@@ -2,10 +2,22 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { saveSettings } from "../src/config";
+import { saveSettings, shipHome } from "../src/config";
 import { credentialSources, credentials, useCredentials } from "../src/credentials";
 import { checkKeychainName, decodePassword, readGenericPassword, writeGenericPassword } from "../src/keychain";
-import { expandHome, isSecretReference, normalizePrivateKey, opFailed, parseKeychainRef, resolveSecret, runOp, sourceOf, tools } from "../src/secrets";
+import {
+  expandHome,
+  isSecretReference,
+  normalizePrivateKey,
+  opFailed,
+  ownSecretReason,
+  parseKeychainRef,
+  resolveSecret,
+  resolveStorePassword,
+  runOp,
+  sourceOf,
+  tools,
+} from "../src/secrets";
 import { fakeKeychain, generateKey, temp } from "./helpers";
 
 const error = async (promise: Promise<unknown>) => {
@@ -26,6 +38,37 @@ describe("references", () => {
     expect(parseKeychainRef("keychain:com.example.app")).toBeUndefined();
     for (const bad of ["keychain:", "keychain:/x", "keychain:a/", "keychain:a b/c", "keychain:a/b/c", 'keychain:a"/b', "keychain:a;rm/b", "op://x"]) {
       expect(parseKeychainRef(bad)).toBeUndefined();
+    }
+  });
+
+  test("a store password can't name ship's own secrets", async () => {
+    const settings = { credentials: { keyId: "op://Dev/ASC/key id", privateKey: "op://Dev/ASC/private key" } };
+    for (const own of [
+      "keychain:ship/asc-private-key-ABC123",
+      "keychain:ship/app-store-connect-api-key",
+      "keychain:ship/op-service-account-token",
+      "env:SHIP_ASC_PRIVATE_KEY",
+      "env:SHIP_ASC_KEY_ID",
+      "env:OP_SERVICE_ACCOUNT_TOKEN",
+      "file:~/Downloads/AuthKey_ABC123.P8",
+      `file:${join(shipHome, "config.json")}`,
+      "op://Dev/ASC/private key",
+      // Another field of the key's item.
+      "op://Dev/ASC/password",
+    ]) {
+      expect(ownSecretReason(own, settings)).toBeString();
+    }
+    for (const fine of ["keychain:ship/lift-demo-password", "keychain:other/app-store-connect-api-key", "env:DEMO_PASSWORD", "file:~/demo.txt", "op://Dev/Lift/password"]) {
+      expect(ownSecretReason(fine, settings)).toBeUndefined();
+    }
+    // Refused before anything is read (the Keychain and op throw in tests).
+    await saveSettings({ credentials: { privateKey: "op://Dev/ASC/private key" } });
+    try {
+      for (const own of ["keychain:ship/app-store-connect-api-key", "op://Dev/ASC/private key"]) {
+        expect(await error(resolveStorePassword(own))).toMatchObject({ code: "own-secret", hint: expect.stringContaining("ship secret set keychain:ship/<app>-demo-password --stdin") });
+      }
+    } finally {
+      await saveSettings({});
     }
   });
 

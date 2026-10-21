@@ -102,6 +102,13 @@ export async function deleteGenericPassword(service: string, account: string) {
 
 // MARK: ship's own items
 
+/** The account prefix of the items `ship auth set --keychain` keeps a key's .p8 in (asc-private-key-<key id>). */
+export const ASC_KEY_ACCOUNT_PREFIX = "asc-private-key-";
+
+/** Whether service/account is one of ship's own items: the API key (saved or cached) or the 1Password token. */
+export const isShipItem = (service: string, account: string) =>
+  service.toLowerCase() === SERVICE && (account === KEY_ACCOUNT || account === TOKEN_ACCOUNT || account.startsWith(ASC_KEY_ACCOUNT_PREFIX));
+
 const readItem = (account: string) => readGenericPassword(SERVICE, account);
 const writeItem = (account: string, label: string, value: string) => writeGenericPassword(SERVICE, account, value, label);
 const deleteItem = (account: string) => deleteGenericPassword(SERVICE, account);

@@ -26,9 +26,9 @@ import {
   updateBetaLocalization,
   updateBetaReviewDetail,
 } from "../asc/testflight";
-import { type Project, loadSettings } from "../config";
+import type { Project } from "../config";
 import { type Change, MASK, diffRecord, same } from "../diff";
-import { isSecretReference, resolveSecret } from "../secrets";
+import { isSecretReference, resolveStorePassword } from "../secrets";
 import { ShipError, ui } from "../ui";
 import { type Problem, chars, isEmail, isHttpUrl, passwordProblem, referenceProblem } from "./check";
 import { ASC_LOCALES, LOCALE_PATTERN, type PushResult, type ReviewDetails, isObject, localeDirs, readText, writeText } from "./files";
@@ -421,9 +421,6 @@ export interface BetaPushResult extends PushResult {
   onlyRemote: string[];
 }
 
-/** The password a reference points at, never logged. */
-const resolvePassword = async (ref: string) => (await resolveSecret(ref, { opAccount: (await loadSettings()).opAccount })) ?? "";
-
 /**
  * Reads the folder, checks it, and compares it with App Store Connect.
  * Stops on validation errors before asking App Store Connect or reading a
@@ -459,7 +456,7 @@ export async function diffBetaInfo(project: Project, options: { appId: string; l
   }
   const remote = await fetchBetaInfo(options.appId);
   const ref = local.review?.demoAccountPassword;
-  const resolvedPassword = typeof ref === "string" && ref && remote.review.attributes.demoAccountPassword ? await resolvePassword(ref) : undefined;
+  const resolvedPassword = typeof ref === "string" && ref && remote.review.attributes.demoAccountPassword ? await resolveStorePassword(ref) : undefined;
   const plan = planBetaInfo(local, remote, { locales: options.locales, resolvedPassword, prune: options.prune });
   return { local, remote, plan, problems };
 }
@@ -489,7 +486,7 @@ export async function pushBetaInfo(project: Project, options: { appId: string; d
 
   if (reviewFields || plan.password) {
     const attributes: BetaReviewAttributes = { ...plan.review };
-    if (plan.password === "set") attributes.demoAccountPassword = await resolvePassword(local.review!.demoAccountPassword!);
+    if (plan.password === "set") attributes.demoAccountPassword = await resolveStorePassword(local.review!.demoAccountPassword!);
     if (plan.password === "clear") attributes.demoAccountPassword = null;
     ui.step("Updating the Beta App Review details");
     await updateBetaReviewDetail(remote.review.id, attributes);

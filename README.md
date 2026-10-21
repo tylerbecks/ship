@@ -196,7 +196,7 @@ ship metadata validate    # lengths, keyword bytes, URLs, app.json values, and s
 
 **When things can change.** Apple takes most changes only while a version is being prepared. Promotional text and content rights change any time; name, subtitle, privacy URLs, categories, and age rating change on the App Info being prepared; everything else on the version being prepared (or `--version <x.y>`). When something can't change yet, push stops and lists it; `--partial` pushes the rest. What's New is skipped on an app's first version, and the phased release and a scheduled release date are set by `ship release`, not push.
 
-**The demo account password** in `app.json` is a reference, never the password: `"demoAccountPassword": "keychain:ship/lift-demo-password"` (or `op://…`, `env:…`, `file:…`; see [Secrets](#secrets)). `ship secret set keychain:ship/lift-demo-password --stdin` saves it. Pull never writes the password, `validate` and push refuse one written out, and diff and push show it as `••••`. Left out, App Store Connect's password stays as it is; `""` or `null` clears it.
+**The demo account password** in `app.json` is a reference, never the password: `"demoAccountPassword": "keychain:ship/lift-demo-password"` (or `op://…`, `env:…`, `file:…`; see [Secrets](#secrets)). `ship secret set keychain:ship/lift-demo-password --stdin` saves it. Pull never writes the password, `validate` and push refuse one written out or one that points at ship's own secrets (the API key or the 1Password token, which push would send to App Store Connect), and diff and push show it as `••••`. Left out, App Store Connect's password stays as it is; `""` or `null` clears it.
 
 ### Screenshots and app previews
 

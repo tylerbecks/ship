@@ -1,7 +1,7 @@
 // Offline checks for store files, shared by every `validate`: lengths the
 // way Apple counts them, URLs, emails, and passwords that must be references.
 
-import { badKeychainRef, isSecretReference, parseKeychainRef } from "../secrets";
+import { badKeychainRef, isSecretReference, ownSecretError, ownSecretReason, parseKeychainRef } from "../secrets";
 
 /** Something wrong (error) or worth a look (warning) in a store file. */
 export interface Problem {
@@ -43,9 +43,20 @@ export function passwordProblem(file: string, field: string, value: string | nul
   };
 }
 
-/** A problem when a password's keychain: reference doesn't parse: keychain:<service> alone would send whichever item comes first. */
+/**
+ * A problem when a password's reference can't be sent: a keychain: one that
+ * doesn't parse (keychain:<service> alone would send whichever item comes
+ * first), or one naming ship's own secrets, like the API key. The resolve
+ * sites check again with the machine's settings.
+ */
 export function referenceProblem(file: string, field: string, value: string | null | undefined): Problem | undefined {
-  if (!value?.startsWith("keychain:") || parseKeychainRef(value)) return undefined;
-  const bad = badKeychainRef(value);
-  return { file, field, severity: "error", message: `${field}: ${bad.message}. ${bad.hint}` };
+  if (!value) return undefined;
+  if (value.startsWith("keychain:") && !parseKeychainRef(value)) {
+    const bad = badKeychainRef(value);
+    return { file, field, severity: "error", message: `${field}: ${bad.message}. ${bad.hint}` };
+  }
+  const reason = ownSecretReason(value);
+  if (!reason) return undefined;
+  const own = ownSecretError(value, reason, field);
+  return { file, field, severity: "error", message: `${own.message}. ${own.hint}` };
 }
