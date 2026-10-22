@@ -8,8 +8,9 @@
 //   env:NAME                       an environment variable
 //   file:~/path                    a file
 
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { type Settings, loadSettings, settingsPath, shipHome } from "./config";
 import { NOT_FOUND, type RunResult, run } from "./exec";
 import { KEYCHAIN_NAME, isShipItem, readGenericPassword, readServiceAccountToken } from "./keychain";
@@ -226,13 +227,31 @@ export function ownSecretReason(value: string, settings: Settings = {}): string 
     if (name.startsWith("SHIP_ASC_") || name === "OP_SERVICE_ACCOUNT_TOKEN") return `${name} holds ship's own credentials`;
   }
   if (value.startsWith("file:")) {
-    const path = resolve(expandHome(value.slice("file:".length)));
-    const keyPath = process.env.SHIP_ASC_PRIVATE_KEY_PATH;
-    if (basename(path).toLowerCase().endsWith(".p8") || (keyPath && resolve(expandHome(keyPath)) === path)) return "it's an App Store Connect API key file";
-    if (inside(shipHome, path)) return "it's in ship's settings folder";
+    // Followed through links, so an innocent name in the repo can't stand for the key file.
+    const path = canonical(value.slice("file:".length));
+    const keyFiles = [process.env.SHIP_ASC_PRIVATE_KEY_PATH, ...credentials.filter((ref) => ref.startsWith("file:")).map((ref) => ref.slice("file:".length))]
+      .filter((file): file is string => Boolean(file))
+      .map(canonical);
+    if (basename(path).toLowerCase().endsWith(".p8") || keyFiles.includes(path)) return "it's an App Store Connect API key file";
+    if (inside(canonical(shipHome), path)) return "it's in ship's settings folder";
   }
   return undefined;
 }
+
+/** A path with ~ expanded and links followed; for a path that doesn't exist yet, its nearest folder that does. */
+function canonical(path: string): string {
+  const full = resolve(expandHome(path));
+  for (let dir = full; ; dir = dirname(dir)) {
+    try {
+      return join(realpathSync(dir), relative(dir, full));
+    } catch {
+      if (dirname(dir) === dir) return full;
+    }
+  }
+}
+
+/** Whether a secret is a private key, whatever reference led to it. */
+const isPrivateKey = (secret: string) => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(secret);
 
 /** The error for a store password that names one of ship's own secrets. */
 export function ownSecretError(value: string, reason: string, field = "demoAccountPassword"): ShipError {
@@ -249,7 +268,10 @@ export async function resolveStorePassword(value: string): Promise<string> {
   const settings = await loadSettings();
   const reason = ownSecretReason(value, settings);
   if (reason) throw ownSecretError(value, reason);
-  return (await resolveSecret(value, { opAccount: settings.opAccount })) ?? "";
+  const password = (await resolveSecret(value, { opAccount: settings.opAccount })) ?? "";
+  // However it was reached, a private key is never a demo password.
+  if (isPrivateKey(password)) throw ownSecretError(value, "it holds a private key");
+  return password;
 }
 
 /** The secret a value names (or the value itself, when it's literal). undefined stays undefined. */

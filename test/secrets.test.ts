@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { saveSettings, shipHome } from "../src/config";
@@ -70,6 +70,28 @@ describe("references", () => {
     } finally {
       await saveSettings({});
     }
+  });
+
+  test("a link with an innocent name can't stand for the key file or ship's settings", async () => {
+    await saveSettings({});
+    const dir = temp();
+    const key = join(dir, "AuthKey_ABC123.p8");
+    const pem = "-----BEGIN PRIVATE KEY-----\nMIGT\n-----END PRIVATE KEY-----\n";
+    writeFileSync(key, pem);
+    symlinkSync(key, join(dir, "demo.txt"));
+    symlinkSync(join(shipHome, "config.json"), join(dir, "notes.txt"));
+    const keyCopy = join(dir, "key-copy");
+    writeFileSync(keyCopy, pem);
+    symlinkSync(keyCopy, join(dir, "copy-link.txt"));
+    expect(ownSecretReason(`file:${join(dir, "demo.txt")}`)).toBe("it's an App Store Connect API key file");
+    expect(ownSecretReason(`file:${join(dir, "notes.txt")}`)).toBe("it's in ship's settings folder");
+    // A key file configured under another name, reached through a link.
+    expect(ownSecretReason(`file:${join(dir, "copy-link.txt")}`, { credentials: { privateKey: `file:${keyCopy}` } })).toBe("it's an App Store Connect API key file");
+    // And whatever the path, a private key is never sent as a password.
+    writeFileSync(join(dir, "plain.txt"), pem);
+    expect(await error(resolveStorePassword(`file:${join(dir, "plain.txt")}`))).toMatchObject({ code: "own-secret", message: expect.stringContaining("it holds a private key") });
+    writeFileSync(join(dir, "demo-password.txt"), "hunter2\n");
+    expect(await resolveStorePassword(`file:${join(dir, "demo-password.txt")}`)).toBe("hunter2");
   });
 
   test("sourceOf and isSecretReference tell references from literals", () => {
