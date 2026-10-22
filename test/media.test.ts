@@ -19,6 +19,7 @@ import {
   pushMedia,
   readLock,
   renderMediaChanges,
+  renumber,
   setJSON,
   syncMedia,
   updateLock,
@@ -715,6 +716,46 @@ describe("push and pull", () => {
     const pulled = await pullMedia(p, { appId: "APP" });
     expect(pulled.skipped).toEqual([{ path: P("01-home.png"), reason: "a different file is there; pass --force to overwrite it" }]);
     expect((await pullMedia(p, { appId: "APP", force: true })).written).toEqual([P("01-home.png")]);
+  });
+
+  test("pull --force renumbers matching files into App Store Connect's order; without it, says they differ", async () => {
+    const p = await project();
+    const a = png(1290, 2796, { seed: 1 });
+    const b = png(1290, 2796, { seed: 2 });
+    addFile(p, P("01-a.png"), a);
+    addFile(p, P("02-b.png"), b);
+    // App Store Connect shows b first.
+    mock = fakeAsc({ screenshots: [shot("B", "b.png", md5(b)), shot("A", "a.png", md5(a))] });
+
+    const plain = await pullMedia(p, { appId: "APP" });
+    expect(plain).toMatchObject({ written: [], renamed: [] });
+    expect(plain.skipped).toEqual([{ path: "en-US/screenshots/APP_IPHONE_67", reason: expect.stringContaining("pass --force to renumber") }]);
+    expect(existsSync(join(p.storeDir, P("01-a.png")))).toBe(true);
+
+    const forced = await pullMedia(p, { appId: "APP", force: true });
+    expect(forced.renamed).toEqual([
+      { from: P("02-b.png"), to: P("01-b.png") },
+      { from: P("01-a.png"), to: P("02-a.png") },
+    ]);
+    expect(md5(readFileSync(join(p.storeDir, P("01-b.png"))))).toBe(md5(b));
+    expect(md5(readFileSync(join(p.storeDir, P("02-a.png"))))).toBe(md5(a));
+    expect(Object.keys(await readLock(p.storeDir)).sort()).toEqual([P("01-b.png"), P("02-a.png")]);
+    // So the next push keeps App Store Connect's order.
+    expect(await diffMedia(p, { appId: "APP" })).toMatchObject({ changes: [], hasChanges: false });
+    expect((await pullMedia(p, { appId: "APP", force: true })).renamed).toEqual([]);
+  });
+});
+
+describe("renumber", () => {
+  test("nothing when the matched files are already in order, even with gaps and extra files", () => {
+    expect(renumber(["s/01-a.png", undefined, "s/05-b.png"], ["s/01-a.png", "s/03-mine.png", "s/05-b.png"])).toEqual([]);
+  });
+
+  test("numbers each matched file by its place in App Store Connect, keeping its name", () => {
+    expect(renumber([undefined, "s/03-b.png", "s/01-a.png"], ["s/01-a.png", "s/03-b.png"])).toEqual([
+      { from: "s/03-b.png", to: "s/02-b.png" },
+      { from: "s/01-a.png", to: "s/03-a.png" },
+    ]);
   });
 });
 

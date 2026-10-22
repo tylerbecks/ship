@@ -93,12 +93,13 @@ async function pull(ctx: Context) {
   const result = await pullMedia(project, { ...(await options(ctx, project)), force: boolFlag(ctx, "force") });
   ui.result(result, () => {
     const dir = where(project, result.dir);
-    const { written, unchanged, skipped } = result;
-    if (!written.length && !skipped.length) {
+    const { written, unchanged, renamed, skipped } = result;
+    if (!written.length && !renamed.length && !skipped.length) {
       console.log(unchanged.length ? `${dir}/ already matches version ${result.version.versionString}.` : `Version ${result.version.versionString} has no screenshots or previews.`);
     } else {
       console.log(`Wrote ${written.length} file${written.length === 1 ? "" : "s"} to ${dir}/ from version ${result.version.versionString}${unchanged.length ? ` (${unchanged.length} already matched)` : ""}.`);
     }
+    for (const item of renamed) console.log(`  renamed ${item.from} → ${item.to} (App Store Connect's order)`);
     for (const item of skipped) console.log(`  skipped ${item.path}: ${item.reason}`);
   });
 }

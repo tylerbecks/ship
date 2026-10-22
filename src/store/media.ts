@@ -14,7 +14,7 @@
 // them; without one, push leaves that locale's screenshots alone, even with
 // --prune.
 
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import {
   type MediaAsset,
@@ -941,7 +941,39 @@ export interface MediaPullResult {
   written: string[];
   /** Local files that already match. */
   unchanged: string[];
+  /** Matching files renumbered (with --force) into App Store Connect's order. */
+  renamed: { from: string; to: string }[];
   skipped: { path: string; reason: string }[];
+}
+
+/**
+ * The renames that put matched local files in App Store Connect's order, or
+ * none when they're already in it. `matches` is matchPulled's, in App Store
+ * Connect's order; `localOrder` is the folder's paths in display order. Each
+ * file keeps its name after the number, numbered by its place in App Store
+ * Connect, as a pulled file would be. Pure.
+ */
+export function renumber(matches: (string | undefined)[], localOrder: string[]): { from: string; to: string }[] {
+  const matched = matches.filter((path): path is string => Boolean(path));
+  const current = localOrder.filter((path) => matched.includes(path));
+  if (matched.every((path, i) => current[i] === path)) return [];
+  return matches.flatMap((path, index) => {
+    if (!path) return [];
+    const slash = path.lastIndexOf("/");
+    const name = path.slice(slash + 1);
+    const to = `${path.slice(0, slash)}/${mediaFileName(index, name, extname(name))}`;
+    return to === path ? [] : [{ from: path, to }];
+  });
+}
+
+/** Renames files in the store folder through temporary names, so swapping two names works. */
+function moveFiles(storeDir: string, renames: { from: string; to: string }[]) {
+  const temporary = renames.map(({ from }, i) => {
+    const temp = `${from}.ship-renumber-${i}`;
+    renameSync(join(storeDir, from), join(storeDir, temp));
+    return temp;
+  });
+  renames.forEach(({ to }, i) => renameSync(join(storeDir, temporary[i]!), join(storeDir, to)));
 }
 
 /** NN-<name>.<ext> for the file at `index`, from the name it was uploaded with. */
@@ -996,7 +1028,7 @@ export async function pullMedia(project: Project, options: MediaOptions & { forc
   const versions = await appStoreVersions(options.appId, platformInfo(platformOf(project, options)).asc);
   const version = chooseVersion(versions, { version: options.version });
   const lock = await readLock(project.storeDir);
-  const result: MediaPullResult = { dir: project.storeDir, version: versionJSON(version), written: [], unchanged: [], skipped: [] };
+  const result: MediaPullResult = { dir: project.storeDir, version: versionJSON(version), written: [], unchanged: [], renamed: [], skipped: [] };
   const localizations = (await versionLocalizations(version.id)).filter((item) => wanted(options.locales, item.locale));
   try {
     for (const localization of localizations) {
@@ -1008,8 +1040,24 @@ export async function pullMedia(project: Project, options: MediaOptions & { forc
           const folder = `${locale}/${kind}/${set.type}`;
           ui.step(folder);
           const local = localMedia(project.storeDir, { locales: [locale], types: [set.type] }).sets.find((item) => item.kind === kind);
-          const files = local ? (await hashSet(local)).files.map((file) => ({ path: file.path, md5: file.md5! })) : [];
-          const matches = matchPulled(assets.map((asset) => (isBroken(asset) ? {} : asset)), files, lock);
+          let files = local ? (await hashSet(local)).files.map((file) => ({ path: file.path, md5: file.md5! })) : [];
+          let matches = matchPulled(assets.map((asset) => (isBroken(asset) ? {} : asset)), files, lock);
+          // Matching files in another order than App Store Connect's would make the next push reorder it back.
+          const renames = renumber(matches, files.map((file) => file.path));
+          const inTheWay = renames.find(({ to }) => existsSync(join(project.storeDir, to)) && !renames.some(({ from }) => from === to));
+          if (renames.length && !options.force) {
+            result.skipped.push({ path: folder, reason: "App Store Connect has these in another order; pass --force to renumber the files to match (a push would put them back in this order)" });
+          } else if (inTheWay) {
+            result.skipped.push({ path: inTheWay.to, reason: "it's in the way of renumbering the files into App Store Connect's order; move it and pull again" });
+          } else if (renames.length) {
+            moveFiles(project.storeDir, renames);
+            const moved = new Map(renames.map(({ from, to }) => [from, to]));
+            for (const { from } of renames) delete lock[from];
+            files = files.map((file) => ({ ...file, path: moved.get(file.path) ?? file.path }));
+            matches = matches.map((path) => (path && moved.get(path)) ?? path);
+            result.renamed.push(...renames);
+            for (const { from, to } of renames) ui.note(`${from.slice(folder.length + 1)} → ${to.slice(folder.length + 1)}`);
+          }
           const taken = new Set(matches.filter((path): path is string => Boolean(path)));
           for (const [index, asset] of assets.entries()) {
             const match = matches[index];
