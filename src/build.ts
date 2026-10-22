@@ -1,13 +1,33 @@
 // Archiving, exporting, checking, and uploading an app build.
 
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Project } from "./config";
+import { pathToFileURL } from "node:url";
+import { type Project, findConfigRoot } from "./config";
 import type { Credentials } from "./credentials";
 import { run, runOrThrow } from "./exec";
+import { platformInfo } from "./platform";
+import { buildSettingArgs, trustError, untrustedPackages } from "./trust";
 import { ShipError, ui } from "./ui";
 import { setPackageBuild, target } from "./xcode";
+
+/** A build number as Apple takes it (CFBundleVersion): one to three dot-separated whole numbers, like 42 or 1.2.3. */
+export const BUILD_NUMBER = /^\d+(\.\d+){0,2}$/;
+
+/** Stops a --build value Apple would reject, before archiving for minutes. */
+export function checkBuildNumber(value: string): string {
+  if (!BUILD_NUMBER.test(value)) {
+    throw new ShipError(
+      `"${value}" isn't a build number`,
+      "usage",
+      "Use one to three dot-separated whole numbers, like --build 42 or --build 1.2.3.",
+      undefined,
+      2,
+    );
+  }
+  return value;
+}
 
 /** Paths for one build's products and logs, under the repo's .ship folder. */
 export function buildPaths(project: Project, build: string) {
@@ -63,28 +83,48 @@ export async function archive(project: Project, build: string, creds?: Credentia
     await setPackageBuild(container.path, build);
   }
   const { args, cwd } = target(container);
-  await runOrThrow(
-    [
-      "xcodebuild", "archive",
-      ...args,
-      "-scheme", project.config.scheme,
-      "-configuration", "Release",
-      "-destination", "generic/platform=iOS",
-      "-archivePath", paths.archive,
-      "-derivedDataPath", join(project.workDir, "DerivedData"),
-      ...authArgs(creds, key),
-      // SHIP_JOBS limits parallel compile jobs, for machines that bog down.
-      ...(process.env.SHIP_JOBS ? ["-jobs", process.env.SHIP_JOBS] : []),
-      // Projects read the build number from this setting.
-      `CURRENT_PROJECT_VERSION=${build}`,
-      ...(commit ? [`SHIP_COMMIT=${commit}`] : []),
-    ],
-    { cwd, logFile: paths.archiveLog, what: "Archiving" },
-  );
+  const command = [
+    "xcodebuild", "archive",
+    ...args,
+    "-scheme", project.config.scheme,
+    "-configuration", "Release",
+    "-destination", platformInfo(project.platform).destination,
+    "-archivePath", paths.archive,
+    "-derivedDataPath", join(project.workDir, "DerivedData"),
+    ...authArgs(creds, key),
+    // SHIP_JOBS limits parallel compile jobs, for machines that bog down.
+    ...(process.env.SHIP_JOBS ? ["-jobs", process.env.SHIP_JOBS] : []),
+    // Projects read the build number from this setting.
+    `CURRENT_PROJECT_VERSION=${build}`,
+    ...(commit ? [`SHIP_COMMIT=${commit}`] : []),
+    // ship.json's "build" settings: skipping Xcode's trust prompt, and any other arguments.
+    ...buildSettingArgs(project.config.build),
+  ];
+  try {
+    await runOrThrow(command, { cwd, logFile: paths.archiveLog, what: "Archiving" });
+  } catch (error) {
+    if (!(error instanceof ShipError) || error.code !== "command-failed") throw error;
+    const untrusted = untrustedPackages(await Bun.file(paths.archiveLog).text().catch(() => ""));
+    if (!untrusted) throw error;
+    const openCommand = openCommandFor(project);
+    throw trustError(untrusted, {
+      open: ui.link(openCommand, pathToFileURL(project.projectPath).href),
+      openCommand,
+      projectPath: project.projectPath,
+      log: paths.archiveLog,
+    });
+  }
   return paths.archive;
 }
 
-/** Exports an App Store Connect .ipa from the archive. */
+/** The command that opens this project in Xcode: `ship open`, with --app when the current folder is another repo. */
+export function openCommandFor(project: Project, cwd = process.cwd()): string {
+  if (findConfigRoot(cwd) === project.root) return "ship open";
+  const name = /^[\w.-]+$/.test(project.config.name) ? project.config.name : JSON.stringify(project.config.name);
+  return `ship open --app ${name}`;
+}
+
+/** Exports an App Store Connect package from the archive: an .ipa, or a .pkg for macOS. */
 export async function exportIPA(project: Project, build: string, creds?: Credentials, key?: { path: string }) {
   const paths = buildPaths(project, build);
   const options: Record<string, string | boolean> = {
@@ -116,9 +156,35 @@ export async function exportIPA(project: Project, build: string, creds?: Credent
     ui.note("The API key can't use cloud signing; exporting with the account signed in to Xcode instead");
     await exportWith(authArgs());
   }
-  const ipa = readdirSync(paths.exportDir).find((name) => name.endsWith(".ipa"));
-  if (!ipa) throw new ShipError("The export made no .ipa", "no-ipa", `See ${paths.exportLog}`);
-  return join(paths.exportDir, ipa);
+  const made = findPackage(existsSync(paths.exportDir) ? readdirSync(paths.exportDir) : [], platformInfo(project.platform).package);
+  if (!made) throw new ShipError(`The export made no ${platformInfo(project.platform).package}`, "no-ipa", `See ${paths.exportLog}`);
+  return join(paths.exportDir, made);
+}
+
+/** The exported package among the export folder's files: the platform's kind first, then any .ipa or .pkg. */
+export function findPackage(files: string[], preferred: ".ipa" | ".pkg"): string | undefined {
+  return files.find((name) => name.endsWith(preferred)) ?? files.find((name) => name.endsWith(".ipa") || name.endsWith(".pkg"));
+}
+
+/** The app's Info.plist inside an archive: Products/Applications/<App>.app/Info.plist, or Contents/Info.plist for macOS. */
+export function archiveInfoPlist(archive: string): string | undefined {
+  const apps = join(archive, "Products", "Applications");
+  if (!existsSync(apps)) return undefined;
+  for (const app of readdirSync(apps).filter((name) => name.endsWith(".app")).sort()) {
+    for (const candidate of [join(apps, app, "Contents", "Info.plist"), join(apps, app, "Info.plist")]) {
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** The built app's Info.plist: from the .ipa, or for a .pkg, from the archive it was exported from. */
+export async function packageInfo(path: string, archive: string): Promise<Record<string, unknown>> {
+  if (path.endsWith(".ipa")) return ipaInfo(path);
+  const plistPath = archiveInfoPlist(archive);
+  if (!plistPath) throw new ShipError("The archive has no app Info.plist", "bad-ipa", `Look inside ${archive}/Products/Applications.`);
+  const json = await runOrThrow(["plutil", "-convert", "json", "-o", "-", plistPath], { what: "Reading Info.plist" });
+  return JSON.parse(json.stdout);
 }
 
 /** The app's Info.plist from inside an .ipa. */
@@ -162,11 +228,11 @@ export function checkInfo(info: Record<string, unknown>, expected: { bundleId: s
   ];
 }
 
-/** Uploads an .ipa to App Store Connect with altool and the API key. */
+/** Uploads an .ipa (or a macOS .pkg) to App Store Connect with altool and the API key. */
 export async function upload(project: Project, build: string, ipa: string, creds: Credentials, key: { dir: string }) {
   const paths = buildPaths(project, build);
   const result = await run(
-    ["xcrun", "altool", "--upload-app", "-f", ipa, "-t", "ios", "--apiKey", creds.keyId, "--apiIssuer", creds.issuerId, "--output-format", "json"],
+    ["xcrun", "altool", "--upload-app", "-f", ipa, "-t", platformInfo(project.platform).altool, "--apiKey", creds.keyId, "--apiIssuer", creds.issuerId, "--output-format", "json"],
     { env: { API_PRIVATE_KEYS_DIR: key.dir }, logFile: paths.uploadLog },
   );
   if (result.code !== 0) {
@@ -175,8 +241,9 @@ export async function upload(project: Project, build: string, ipa: string, creds
       const json = JSON.parse(result.stdout.slice(result.stdout.indexOf("{")));
       messages = (json["product-errors"] ?? []).map((e: { message: string }) => e.message);
     } catch {
-      messages = result.stderr.trim().split("\n").slice(-4);
+      messages = [];
     }
+    if (!messages.length) messages = result.stderr.trim().split("\n").filter(Boolean).slice(-4);
     const duplicate = messages.some((m) => /bundle version must be higher|already been used|redundant binary/i.test(m));
     throw new ShipError(
       "Upload failed",
@@ -191,10 +258,17 @@ export async function upload(project: Project, build: string, ipa: string, creds
   ui.note(`Upload log: ${paths.uploadLog}`);
 }
 
-function plist(values: Record<string, string | boolean>): string {
+/** Escapes text for an XML element. */
+export const xmlEscape = (text: string) =>
+  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+
+/** A flat property list of strings and booleans. */
+export function plist(values: Record<string, string | boolean>): string {
   const entries = Object.entries(values)
     .map(([key, value]) =>
-      typeof value === "boolean" ? `\t<key>${key}</key>\n\t<${value}/>` : `\t<key>${key}</key>\n\t<string>${value}</string>`,
+      typeof value === "boolean"
+        ? `\t<key>${xmlEscape(key)}</key>\n\t<${value}/>`
+        : `\t<key>${xmlEscape(key)}</key>\n\t<string>${xmlEscape(value)}</string>`,
     )
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>

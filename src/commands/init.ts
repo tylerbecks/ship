@@ -1,6 +1,8 @@
-import { existsSync } from "node:fs";
+// ship init: find the app's project and scheme, and write ship.json.
+
+import { existsSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { lookupApp } from "../asc/api";
+import { lookupApp } from "../asc/apps";
 import { hasCredentials } from "../credentials";
 import {
   CONFIG_FILE,
@@ -11,10 +13,12 @@ import {
   repoRoot,
   saveProjectConfig,
 } from "../config";
+import { type Command, boolFlag, stringFlag } from "../command";
 import { ShipError, ui } from "../ui";
-import { type XcodeContainer, appSettings, findContainers, listSchemes, packageSettings } from "../xcode";
+import { DEFAULT_PLATFORM, type Platform, checkCatalyst, parsePlatform, platformInfo } from "../platform";
+import { type AppSettings, type XcodeContainer, appSettings, findContainers, listSchemes, packageSettings } from "../xcode";
 
-export const initHelp = `ship init [--project <path>] [--scheme <name>] [--force]
+export const initHelp = `ship init [--project <path>] [--scheme <name>] [--platform <name>] [--force]
 
 Sets up the current repo for ship: finds the Xcode project (or .swiftpm
 package), the scheme that builds the app, and its bundle id, then writes
@@ -25,9 +29,12 @@ When there's more than one project or scheme, it says which and how to pick.
 
   --project <path>  The .xcodeproj, .xcworkspace, or .swiftpm to use
   --scheme <name>   The scheme that builds the app
-  --force           Replace an existing ship.json`;
+  --platform <name> ios, macos, tvos, or visionos (detected when left out)
+  --force           Detect everything again in an existing ship.json,
+                    keeping groups, store, and beta`;
 
-export async function init(options: { project?: string; scheme?: string; force?: boolean }) {
+export async function init(options: { project?: string; scheme?: string; platform?: string; force?: boolean }) {
+  const requested = options.platform !== undefined ? parsePlatform(options.platform) : undefined;
   const root = await repoRoot(process.cwd());
   const existing = findConfigRoot(process.cwd());
   if (existing && !options.force) {
@@ -46,19 +53,30 @@ export async function init(options: { project?: string; scheme?: string; force?:
   ui.ok(`Scheme: ${scheme}`);
 
   ui.step("Reading build settings");
-  const settings = container.kind === "swiftpm" ? await packageSettings(container.path) : await appSettings(container, scheme);
+  if (container.kind === "swiftpm" && requested && requested !== "ios") {
+    throw new ShipError("App Playground packages build for iOS only", "usage", "Leave out --platform, or pass --platform ios.", { choices: ["ios"] }, 2);
+  }
+  // Read as the scheme builds by default to see which platforms it supports, then as the chosen one.
+  let settings = container.kind === "swiftpm" ? await packageSettings(container.path) : await appSettings(container, scheme);
+  if (requested && settings.platformSettings) checkCatalyst(requested, settings.platformSettings);
+  const platform = choosePlatform(requested, settings);
+  if (container.kind !== "swiftpm" && (platform !== settings.platform || (settings.platforms?.length ?? 0) > 1)) {
+    settings = { ...(await appSettings(container, scheme, platform)), platforms: settings.platforms };
+  }
+  if (platform !== "ios" || (settings.platforms?.length ?? 0) > 1) ui.ok(`Platform: ${platformInfo(platform).title}`);
   const bundleId = settings.bundleId;
   if (!bundleId) {
     throw new ShipError(`The scheme "${scheme}" has no bundle identifier`, "no-bundle-id", "Set one in Xcode (Signing & Capabilities), then run `ship init` again.");
   }
 
-  const config: ProjectConfig = {
+  const detected: ProjectConfig = {
     name: settings.productName,
     kind: container.kind,
     path: relativeTo(root, container.path),
     scheme,
     bundleId,
     teamId: settings.teamId,
+    platform,
   };
 
   // With App Store Connect credentials, link the app now so later commands
@@ -67,15 +85,17 @@ export async function init(options: { project?: string; scheme?: string; force?:
     ui.step("Finding the app in App Store Connect");
     const app = await lookupApp(bundleId);
     if (app) {
-      config.ascAppId = app.id;
+      detected.ascAppId = app.id;
       ui.ok(`App Store Connect: ${app.name} (${app.id})`);
     } else {
       ui.warn(`No App Store Connect app uses ${bundleId} yet. Create it, then run \`ship init --force\`.`);
     }
   }
 
+  const config = mergeConfig(await previousConfig(root), detected);
   await saveProjectConfig(root, config);
-  await rememberApp({ name: config.name, bundleId, root });
+  const registered = await rememberApp({ name: config.name, bundleId, root });
+  if (registered !== realpathSync(root)) ui.note(`This is a worktree; ship knows the app by its main checkout, ${registered}`);
   const ignored = await ignoreWorkDir(root);
 
   ui.result({ config, file: join(root, CONFIG_FILE) }, () => {
@@ -83,6 +103,54 @@ export async function init(options: { project?: string; scheme?: string; force?:
     console.log(`Wrote ${CONFIG_FILE}. Commit it, and every clone and worktree is set up too.`);
     if (ignored) console.log("Added .ship/ (build products and logs) to .gitignore.");
   });
+}
+
+/** The ship.json `init --force` replaces, or undefined when there's none (or it isn't a JSON object). */
+async function previousConfig(root: string): Promise<Partial<ProjectConfig> | undefined> {
+  const file = Bun.file(join(root, CONFIG_FILE));
+  if (!(await file.exists())) return undefined;
+  const json: unknown = await file.json().catch(() => undefined);
+  if (typeof json === "object" && json !== null && !Array.isArray(json)) return json as Partial<ProjectConfig>;
+  ui.warn(`${join(root, CONFIG_FILE)} isn't a JSON object; writing a new one`);
+  return undefined;
+}
+
+/**
+ * What `init --force` writes: the detected fields over the ship.json that was
+ * there, so what init doesn't detect (groups, store, beta, and the app id when
+ * there was no lookup) stays. A field init found nothing for keeps the old
+ * value, except the app id when the bundle id changed, since it named the
+ * other app.
+ */
+export function mergeConfig(previous: Partial<ProjectConfig> | undefined, detected: ProjectConfig): ProjectConfig {
+  const merged: Record<string, unknown> = { ...previous };
+  if (previous?.bundleId && previous.bundleId.toLowerCase() !== detected.bundleId.toLowerCase()) delete merged.ascAppId;
+  for (const [key, value] of Object.entries(detected)) if (value !== undefined) merged[key] = value;
+  return merged as unknown as ProjectConfig;
+}
+
+/**
+ * The platform to ship: --platform when given, else what the target builds
+ * for first (iOS before macOS, tvOS, visionOS). A target that supports more
+ * than one gets a note about --platform.
+ */
+export function choosePlatform(requested: Platform | undefined, settings: Pick<AppSettings, "platform" | "platforms">): Platform {
+  if (requested) {
+    if (settings.platforms?.length && !settings.platforms.includes(requested)) {
+      throw new ShipError(
+        `The app doesn't build for ${platformInfo(requested).title}`,
+        "bad-platform",
+        `It builds for ${settings.platforms.map((p) => platformInfo(p).title).join(", ")}: ship init --platform ${settings.platforms[0]}`,
+        { choices: settings.platforms },
+        2,
+      );
+    }
+    return requested;
+  }
+  const platform = settings.platform ?? DEFAULT_PLATFORM;
+  const others = (settings.platforms ?? []).filter((p) => p !== platform);
+  if (others.length) ui.note(`It also builds for ${others.map((p) => platformInfo(p).title).join(", ")}; pick one with --platform.`);
+  return platform;
 }
 
 function pickContainer(root: string, project?: string): XcodeContainer {
@@ -142,3 +210,15 @@ async function ignoreWorkDir(root: string): Promise<boolean> {
   await Bun.write(join(root, ".gitignore"), `${text}${text && !text.endsWith("\n") ? "\n" : ""}# ship: build products and logs\n.ship/\n`);
   return true;
 }
+
+export const commands: Command[] = [
+  {
+    name: "init",
+    index: [{ section: "setup", label: "init", summary: "Find the app's project and scheme; write ship.json" }],
+    help: initHelp,
+    flags: { project: { type: "string" }, scheme: { type: "string" }, platform: { type: "string" }, force: { type: "boolean" } },
+    maxArgs: 0,
+    run: (ctx) =>
+      init({ project: stringFlag(ctx, "project"), scheme: stringFlag(ctx, "scheme"), platform: stringFlag(ctx, "platform"), force: boolFlag(ctx, "force") }),
+  },
+];

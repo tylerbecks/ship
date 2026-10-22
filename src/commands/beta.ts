@@ -1,23 +1,20 @@
+// ship beta and ship distribute: archive, upload, and send a build to TestFlight.
+
 import { join, relative } from "node:path";
-import {
-  type Build,
-  addBuildToGroup,
-  betaGroups,
-  findBuild,
-  highestBuildNumber,
-  setExemptEncryption,
-  setWhatToTest,
-  submitForBetaReview,
-} from "../asc/api";
-import { archive, checkInfo, exportIPA, ipaInfo, upload, withKeyFile } from "../build";
+import { type Build, findBuild, highestBuildNumber, setExemptEncryption } from "../asc/builds";
+import { addBuildToGroup, betaGroups, setWhatToTest, submitForBetaReview } from "../asc/testflight";
+import { archive, buildPaths, checkBuildNumber, checkInfo, exportIPA, packageInfo, upload, withKeyFile } from "../build";
 import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
 import { type Commit, type Tagging, commitSetting, drift, headCommit, tagBuild, tagFor } from "../git";
+import { type Command, boolFlag, checkArgs, stringFlag } from "../command";
+import { checkNotesStdin, whatToTest } from "../notes";
+import { type AscPlatform, platformInfo } from "../platform";
 import { ShipError, ui } from "../ui";
 import { appSettings, packageSettings } from "../xcode";
 import { appId, friendly } from "./status";
 
-export const betaHelp = `ship beta [--notes <text>] [--external] [--build <n>] [--no-wait] [--dry-run] [--allow-dirty]
+export const betaHelp = `ship beta [--notes <text>] [--notes-file <path>] [--notes-from-git] [--external] [--build <n>] [--no-wait] [--dry-run] [--allow-dirty]
 
 Ships a TestFlight build in one go:
   1. picks the next build number (one above the highest in App Store Connect)
@@ -34,16 +31,24 @@ pushes the tag, so \`ship status\` and git know what each build contains.
 Safe to re-run: a build that's already uploaded isn't uploaded again; use
 \`ship distribute <build>\` to redo only steps 4 to 6.
 
-  --notes <text>   "What to Test" for testers
-  --external       Also send it to external testers
-  --build <n>      Use this build number instead of the next one
-  --no-wait        Stop after the upload; finish later with \`ship distribute\`
-  --dry-run        Show the plan without building or uploading
-  --allow-dirty    Ship uncommitted changes, or a folder with no commit, untagged`;
+"What to Test" is --notes, then the file, then the commit subjects since the
+previous TestFlight build (--notes-from-git, or "beta": {"notesFromGit": true}
+in ship.json when there's no --notes or --notes-file).
+
+  --notes <text>       "What to Test" for testers
+  --notes-file <path>  "What to Test" from a file (- reads stdin)
+  --notes-from-git     Add the commit subjects since the previous build
+  --external           Also send it to external testers
+  --build <n>          Use this build number instead of the next one
+  --no-wait            Stop after the upload; finish later with \`ship distribute\`
+  --dry-run            Show the plan without building or uploading
+  --allow-dirty        Ship uncommitted changes, or a folder with no commit, untagged`;
 
 export interface BetaOptions {
   app?: string;
   notes?: string;
+  notesFile?: string;
+  notesFromGit?: boolean;
   external?: boolean;
   build?: string;
   wait?: boolean;
@@ -61,23 +66,28 @@ export async function beta(options: BetaOptions) {
   // matters before the first upload. (A failed run may have already bumped it.)
   const highest = await highestBuildNumber(id);
   const build = options.build ?? String(highest > 0 ? highest + 1 : ((await localBuild(project)) ?? 0) + 1);
-  const existing = await findBuild(id, build);
+  const platform = platformInfo(project.platform);
+  const existing = await findBuild(id, build, platform.asc);
   const commit = await headCommit(project.root);
   // A build that's already uploaded may not be HEAD, so only a new upload is tagged. An App
   // Playground's archive still rewrites Package.swift's bundleVersion after this snapshot; that line
   // is the build number the tag is named for, like CURRENT_PROJECT_VERSION for Xcode projects.
   const tagged = !existing && commit && !commit.changes.length;
   if (!existing) checkCommit(commit, Boolean(options.allowDirty));
+  const notes = await whatToTest(project, { ...options, build, at: existing ? "tag" : "head" });
   const plan = {
     app: project.config.name,
     bundleId: project.config.bundleId,
     build,
     upload: !existing,
     external: Boolean(options.external),
-    notes: options.notes ?? null,
+    notes: notes.text,
+    notesSource: notes.source,
+    notesFrom: notes.from,
     commit: commit?.sha ?? null,
     branch: commit?.branch ?? null,
     tag: tagged ? tagFor(build) : null,
+    platform: project.platform,
   };
   ui.ok(`Build ${build}${existing ? " (already uploaded; skipping to distribution)" : ""}`);
 
@@ -86,6 +96,7 @@ export async function beta(options: BetaOptions) {
       console.log(`Would ${existing ? "distribute" : "archive, upload, and distribute"} ${project.config.name} build ${build}.`);
       console.log(`Internal groups: yes. External groups and Beta App Review: ${options.external ? "yes" : "no"}.`);
       if (plan.tag) console.log(`Would tag ${commit!.short} as ${plan.tag}.`);
+      if (plan.notes) console.log(`What to Test:\n${indent(plan.notes)}`);
     });
     return;
   }
@@ -96,11 +107,11 @@ export async function beta(options: BetaOptions) {
       ui.step(`Archiving ${project.config.scheme} (Release, build ${build})`);
       await archive(project, build, creds, key, commit && commitSetting(commit));
       ui.ok("Archived");
-      ui.step("Exporting the App Store Connect .ipa");
+      ui.step(`Exporting the App Store Connect ${platform.package}`);
       const ipa = await exportIPA(project, build, creds, key);
       ui.ok(`Exported ${ipa}`);
 
-      const checks = checkInfo(await ipaInfo(ipa), { bundleId: project.config.bundleId, build });
+      const checks = checkInfo(await packageInfo(ipa, buildPaths(project, build).archive), { bundleId: project.config.bundleId, build });
       for (const check of checks) (check.ok ? ui.ok : ui.warn).call(ui, check.message);
       const blocking = checks.slice(0, 2).filter((c) => !c.ok);
       if (blocking.length) {
@@ -133,9 +144,11 @@ export async function beta(options: BetaOptions) {
     return;
   }
 
-  const result = await distribute(project, id, build, options);
+  const result = await distribute(project, id, build, { ...options, notes: notes.text ?? undefined });
   ui.result({ plan, tag, ...result }, () => printDistribution(project, build, result));
 }
+
+const indent = (text: string) => text.replace(/^/gm, "  ");
 
 /** Files the archive itself rewrites: an App Playground's Package.swift gets the build number. */
 async function rewrittenPaths(project: Project): Promise<string[]> {
@@ -179,17 +192,26 @@ async function tagCommit(project: Project, build: string, commit: Commit): Promi
   return tag;
 }
 
-export const distributeHelp = `ship distribute <build> [--notes <text>] [--external]
+export const distributeHelp = `ship distribute <build> [--notes <text>] [--notes-file <path>] [--notes-from-git] [--external]
 
 Finishes a build that's already uploaded: waits for processing, answers
 export compliance, sets "What to Test", adds it to the internal groups, and
-with --external, the external groups plus Beta App Review.`;
+with --external, the external groups plus Beta App Review.
+
+  --notes <text>       "What to Test" for testers
+  --notes-file <path>  "What to Test" from a file (- reads stdin)
+  --notes-from-git     Add the commit subjects since the previous build, up to
+                       the build's testflight/<build> tag
+  --external           Also send it to external testers`;
 
 export async function distributeCommand(build: string, options: Omit<BetaOptions, "build" | "dryRun">) {
   const project = await loadProject({ app: options.app });
   const id = await appId(project);
-  const result = await distribute(project, id, build, options);
-  ui.result({ buildNumber: build, ...result }, () => printDistribution(project, build, result));
+  const notes = await whatToTest(project, { ...options, build, at: "tag" });
+  const result = await distribute(project, id, build, { ...options, notes: notes.text ?? undefined });
+  ui.result({ buildNumber: build, ...result, whatToTest: notes.text, notesSource: notes.source, notesFrom: notes.from }, () =>
+    printDistribution(project, build, result),
+  );
 }
 
 interface Distribution {
@@ -201,7 +223,8 @@ interface Distribution {
 }
 
 async function distribute(project: Project, id: string, number: string, options: { notes?: string; external?: boolean }): Promise<Distribution> {
-  const build = await waitForProcessing(id, number);
+  const platform = platformInfo(project.platform).asc;
+  const build = await waitForProcessing(id, number, platform);
   const notes: string[] = [];
 
   if (build.usesNonExemptEncryption == null) {
@@ -254,16 +277,16 @@ async function distribute(project: Project, id: string, number: string, options:
   }
 
   const publicLinks = groups.filter((g) => !g.isInternal && g.publicLinkEnabled && g.publicLink).map((g) => g.publicLink!);
-  return { build: (await findBuild(id, number)) ?? build, groups: added, submittedForReview, publicLinks, notes };
+  return { build: (await findBuild(id, number, platform)) ?? build, groups: added, submittedForReview, publicLinks, notes };
 }
 
 /** Waits for App Store Connect to receive and process a build (usually 5 to 30 minutes). */
-async function waitForProcessing(id: string, number: string): Promise<Build> {
+async function waitForProcessing(id: string, number: string, platform: AscPlatform): Promise<Build> {
   ui.step(`Waiting for App Store Connect to process build ${number}`);
   const deadline = Date.now() + 60 * 60 * 1000;
   let last = "";
   while (Date.now() < deadline) {
-    const build = await findBuild(id, number);
+    const build = await findBuild(id, number, platform);
     const state = build?.processingState ?? "not received yet";
     if (state !== last) {
       ui.note(friendly(state) || state);
@@ -295,7 +318,7 @@ async function localBuild(project: Project): Promise<number | undefined> {
     const value =
       project.config.kind === "swiftpm"
         ? (await packageSettings(project.projectPath)).build
-        : (await appSettings({ kind: project.config.kind, path: project.projectPath }, project.config.scheme)).build;
+        : (await appSettings({ kind: project.config.kind, path: project.projectPath }, project.config.scheme, project.platform)).build;
     const number = Number.parseInt(value ?? "", 10);
     return Number.isFinite(number) ? number : undefined;
   } catch {
@@ -303,3 +326,59 @@ async function localBuild(project: Project): Promise<number | undefined> {
   }
 }
 
+
+const optionalBuild = (value: string | undefined) => (value === undefined ? undefined : checkBuildNumber(value));
+
+export const commands: Command[] = [
+  {
+    name: "beta",
+    index: [{ section: "daily", label: "beta", summary: "Next build number → archive → upload → TestFlight" }],
+    help: betaHelp,
+    flags: {
+      notes: { type: "string" },
+      "notes-file": { type: "string" },
+      "notes-from-git": { type: "boolean" },
+      external: { type: "boolean" },
+      build: { type: "string" },
+      "no-wait": { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      "allow-dirty": { type: "boolean" },
+    },
+    maxArgs: 0,
+    run: (ctx) => {
+      checkNotesStdin(stringFlag(ctx, "notes-file"));
+      return beta({
+        app: ctx.app,
+        notes: stringFlag(ctx, "notes"),
+        notesFile: stringFlag(ctx, "notes-file"),
+        notesFromGit: boolFlag(ctx, "notes-from-git"),
+        external: boolFlag(ctx, "external"),
+        build: optionalBuild(stringFlag(ctx, "build")),
+        wait: !boolFlag(ctx, "no-wait"),
+        dryRun: boolFlag(ctx, "dry-run"),
+        allowDirty: boolFlag(ctx, "allow-dirty"),
+      });
+    },
+  },
+  {
+    name: "distribute",
+    index: [{ section: "daily", label: "distribute <n>", summary: "Finish an uploaded build (groups, review)" }],
+    help: distributeHelp,
+    flags: { notes: { type: "string" }, "notes-file": { type: "string" }, "notes-from-git": { type: "boolean" }, external: { type: "boolean" } },
+    run: (ctx) => {
+      const build = ctx.args[0];
+      if (!build) {
+        throw new ShipError("Which build? ship distribute <build>", "usage", "`ship status` lists the build numbers.", undefined, 2);
+      }
+      checkArgs(ctx.args, 1, "ship distribute takes one build number", `Distribute one build at a time: ship distribute ${build}`);
+      checkNotesStdin(stringFlag(ctx, "notes-file"));
+      return distributeCommand(checkBuildNumber(build), {
+        app: ctx.app,
+        notes: stringFlag(ctx, "notes"),
+        notesFile: stringFlag(ctx, "notes-file"),
+        notesFromGit: boolFlag(ctx, "notes-from-git"),
+        external: boolFlag(ctx, "external"),
+      });
+    },
+  },
+];

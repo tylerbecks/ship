@@ -115,3 +115,15 @@ test("signs App Store Connect tokens that verify with the key", async () => {
   );
   expect(valid).toBe(true);
 });
+
+test("run reports a missing tool as exit 127 instead of throwing", async () => {
+  const result = await run(["ship-no-such-tool-xyz", "--version"]);
+  expect(result.code).toBe(127);
+  expect(result.stderr).toContain("command not found");
+});
+
+test("checkBuildNumber takes Apple's build number format", async () => {
+  const { checkBuildNumber } = await import("../src/build");
+  for (const ok of ["1", "42", "1.2", "1.2.3", "202610210930"]) expect(checkBuildNumber(ok)).toBe(ok);
+  for (const bad of ["", "abc", "1.2.3.4", "1.", "-1", "1 2"]) expect(() => checkBuildNumber(bad)).toThrow();
+});
