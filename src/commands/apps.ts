@@ -3,7 +3,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_FILE, findApp, findConfigRoot, forgetApp, loadApps, loadProject, locateConfig, removeProjectConfig } from "../config";
-import { type Command, boolFlag } from "../command";
+import { type Command, boolFlag, stringFlag } from "../command";
 import { ShipError, table, ui } from "../ui";
 
 export const appsHelp = `ship apps
@@ -65,7 +65,8 @@ export const commands: Command[] = [
     help: removeHelp,
     flags: { "keep-file": { type: "boolean" } },
     maxArgs: 0,
-    run: (ctx) => remove({ app: ctx.app, keepFile: boolFlag(ctx, "keep-file") }),
+    // Only an --app typed here: SHIP_APP shouldn't make `ship remove` in one repo remove another app.
+    run: (ctx) => remove({ app: stringFlag(ctx, "app"), keepFile: boolFlag(ctx, "keep-file") }),
   },
   {
     name: "apps",

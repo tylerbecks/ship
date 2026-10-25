@@ -37,6 +37,7 @@ Every day:
 Flags for every command:
   --json        One JSON object on stdout (progress goes to stderr)
   --app <name>  Use an app from \`ship apps\` instead of the current repo
+  --read-only   Change nothing in App Store Connect (or SHIP_READ_ONLY=1)
   --quiet       Only the result
   --help        Help for a command, e.g. \`ship beta --help\``;
 
@@ -64,7 +65,7 @@ describe("ship --help", () => {
     let at = 0;
     for (const line of lines) if (line === golden[at]) at++;
     expect(golden.slice(at)).toEqual([]);
-    expect(lines.slice(-5)[0]).toBe("Flags for every command:");
+    expect(lines.slice(-6)[0]).toBe("Flags for every command:");
   });
 
   test("prints a section only when it has commands, in order", () => {

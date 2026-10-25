@@ -53,11 +53,13 @@ import { pushMedia } from "../store/media";
 import { pushMetadata } from "../store/metadata";
 import { ShipError, ui } from "../ui";
 import { checkVersion, projectVersion } from "../version";
+import { checksSuite, writeJUnit } from "../junit";
+import { describeDuration, parseDuration, polling, waitFor } from "../wait";
 import { appId } from "./status";
 
-export const releaseHelp = `ship release [status] [--version <x.y>]
+export const releaseHelp = `ship release [status] [--version <x.y>] [--wait [--timeout <time>]]
 ship release prepare [--version <x.y>] [--build <n>] [--push] [--release <when>] [--phased | --no-phased] [--rename]
-ship release submit [the same flags] [--dry-run]
+ship release submit [the same flags] [--dry-run | --wait [--timeout <time>]]
 ship release go [--version <x.y>] [--dry-run]
 ship release cancel [--version <x.y>] [--dry-run]
 ship release phased pause|resume|complete [--version <x.y>] [--dry-run]
@@ -75,6 +77,10 @@ The version defaults to the project's version (see \`ship version\`), and the
 build to the newest processed build of that version. Defaults for --release
 and --phased can live in appstore/app.json under "release".
 
+--wait (on status or submit) waits for App Review to decide. It exits 0
+once the version is approved, 1 when it's rejected or isn't in review, and
+7 when it's still in review at --timeout (default 24h).
+
   --version <x.y>    The App Store version
   --build <n>        The build to attach (default: the newest valid one)
   --push             Push appstore/ (text and screenshots) first
@@ -83,7 +89,10 @@ and --phased can live in appstore/app.json under "release".
   --no-phased        Release to everyone at once
   --rename           Rename the version being prepared to --version (or the project's)
   --platform <p>     ios, macos, tvos, or visionos (default: ship.json's)
-  --dry-run          Show the plan and checks without changing anything`;
+  --dry-run          Show the plan and checks without changing anything
+  --wait             status, submit: wait for App Review's decision
+  --timeout <time>   With --wait: how long, like 2h or 1d (default 24h)
+  --junit <path>     submit: also write the checks as a JUnit report, for CI`;
 
 export interface ReleaseOptions {
   /** The App Store version; the project's version when unset. */
@@ -98,6 +107,10 @@ export interface ReleaseOptions {
   rename?: boolean;
   dryRun?: boolean;
   platform?: AscPlatform;
+  /** Wait for App Review to decide (status and submit). */
+  wait?: boolean;
+  /** How long --wait waits; REVIEW_TIMEOUT_MS when unset. */
+  timeoutMs?: number;
   /** The current time (tests set it). */
   now?: Date;
 }
@@ -714,6 +727,80 @@ export function statusLines(status: StatusResult, now = new Date()): string[] {
   return lines;
 }
 
+// MARK: Waiting for App Review
+
+/** How long --wait waits for App Review unless --timeout says otherwise. */
+export const REVIEW_TIMEOUT_MS = 24 * 60 * 60_000;
+
+/** How often --wait looks: App Review takes hours, so once a minute is plenty. */
+export const REVIEW_POLL_MS = 60_000;
+
+const APPROVED_STATES = ["ACCEPTED", "PENDING_DEVELOPER_RELEASE", "PENDING_APPLE_RELEASE", "PROCESSING_FOR_DISTRIBUTION", ...LIVE_VERSION_STATES];
+const REJECTED_STATES = ["REJECTED", "METADATA_REJECTED", "INVALID_BINARY"];
+/** Submission states that mean App Review has it (the version's own state can lag a submit by a moment). */
+const REVIEWING_SUBMISSION_STATES = ["WAITING_FOR_REVIEW", "IN_REVIEW", "COMPLETING"];
+
+export type ReviewOutcome = "approved" | "rejected" | "pending" | "not-in-review";
+
+/** Where App Review is with the status's version: decided, still going, or never given it. */
+export function reviewOutcome(status: Pick<StatusResult, "version" | "submission">): ReviewOutcome {
+  const { version, submission } = status;
+  if (!version) return "not-in-review";
+  if (APPROVED_STATES.includes(version.state)) return "approved";
+  if (REJECTED_STATES.includes(version.state) || submission?.state === "UNRESOLVED_ISSUES") return "rejected";
+  if (IN_REVIEW_STATES.includes(version.state) || (submission && REVIEWING_SUBMISSION_STATES.includes(submission.state))) return "pending";
+  return "not-in-review";
+}
+
+export type WaitResult = StatusResult & { outcome: "approved"; waitedSeconds: number };
+
+/**
+ * Waits for App Review to approve the version in review (or --version's).
+ * Throws review-rejected or not-in-review (exit 1), and still-pending
+ * (exit 7) at the timeout.
+ */
+export async function waitForReview(project: Project, options: ReleaseOptions): Promise<WaitResult> {
+  const started = polling.now();
+  const timeoutMs = options.timeoutMs ?? REVIEW_TIMEOUT_MS;
+  // The first look picks the version; later ones follow that one, even once it's live.
+  let pinned = options.version;
+  let latest: StatusResult | undefined;
+  ui.step("Waiting for App Review");
+  const status = await waitFor<StatusResult>({
+    everyMs: REVIEW_POLL_MS,
+    timeoutMs,
+    progress: (state) => ui.note(state),
+    check: async () => {
+      latest = await releaseStatus(project, { ...options, version: pinned });
+      pinned ??= latest.version?.versionString;
+      const outcome = reviewOutcome(latest);
+      if (outcome === "approved") return { done: true, value: latest };
+      if (outcome === "rejected") {
+        throw new ShipError(
+          `App Review rejected ${latest.version!.versionString}`,
+          "review-rejected",
+          "Read App Review's messages in App Store Connect (App Review → Messages), fix what they found, then `ship release submit` again.",
+          { status: latest },
+        );
+      }
+      if (outcome === "not-in-review") {
+        const what = latest.version ? `${latest.version.versionString} is ${versionStateText(latest.version.state)}` : "There's no version in review";
+        throw new ShipError(`Nothing to wait for: ${what}`, "not-in-review", "Submit it first: ship release submit --wait", { status: latest });
+      }
+      return { done: false, state: versionStateText(latest.version!.state) };
+    },
+    timedOut: (state) =>
+      new ShipError(
+        `${pinned ?? "The version"} is still ${state || "in review"} after ${describeDuration(timeoutMs)}`,
+        "still-pending",
+        `Keep waiting with \`ship release --wait${pinned ? ` --version ${pinned}` : ""}\`, or check later with \`ship release\`.`,
+        { status: latest ?? null },
+      ),
+  });
+  ui.ok(`${status.version!.versionString} is ${versionStateText(status.version!.state)}`);
+  return { ...status, outcome: "approved", waitedSeconds: Math.round((polling.now() - started) / 1000) };
+}
+
 // MARK: go, cancel, phased
 
 export async function releaseNow(project: Project, options: ReleaseOptions): Promise<{ version: string; released: boolean; dryRun: boolean }> {
@@ -863,6 +950,13 @@ function releaseOptions(ctx: Context): ReleaseOptions {
   // A bad --release is a usage error before anything talks to App Store Connect.
   const when = stringFlag(ctx, "release");
   if (when !== undefined) parseRelease(when);
+  const timeout = stringFlag(ctx, "timeout");
+  if (timeout !== undefined && !boolFlag(ctx, "wait")) {
+    throw new ShipError("--timeout goes with --wait", "usage", "For example: ship release --wait --timeout 2h", undefined, 2);
+  }
+  if (boolFlag(ctx, "wait") && boolFlag(ctx, "dry-run")) {
+    throw new ShipError("--wait waits for a real submission", "usage", "Drop --dry-run to submit and wait, or --wait to see the plan.", undefined, 2);
+  }
   return {
     version: version === undefined ? undefined : checkVersion(version),
     build: build === undefined ? undefined : checkBuildNumber(build),
@@ -872,14 +966,16 @@ function releaseOptions(ctx: Context): ReleaseOptions {
     rename: boolFlag(ctx, "rename"),
     dryRun: boolFlag(ctx, "dry-run"),
     platform: platform === undefined ? undefined : platformInfo(parsePlatform(platform)).asc,
+    wait: boolFlag(ctx, "wait"),
+    timeoutMs: timeout === undefined ? undefined : parseDuration(timeout),
   };
 }
 
 /** Flags only some actions take; --version and --platform work with all of them. */
 const ACTION_FLAGS: Record<string, string[]> = {
-  status: [],
+  status: ["wait", "timeout"],
   prepare: ["build", "push", "release", "phased", "no-phased", "rename", "dry-run"],
-  submit: ["build", "push", "release", "phased", "no-phased", "rename", "dry-run"],
+  submit: ["build", "push", "release", "phased", "no-phased", "rename", "dry-run", "wait", "timeout", "junit"],
   go: ["dry-run"],
   cancel: ["dry-run"],
   phased: ["dry-run"],
@@ -899,7 +995,7 @@ async function release(ctx: Context) {
   const project = await loadProject({ app: ctx.app });
   switch (action) {
     case "status": {
-      const status = await releaseStatus(project, options);
+      const status = options.wait ? await waitForReview(project, options) : await releaseStatus(project, options);
       ui.result(status, () => console.log(statusLines(status).join("\n")));
       return;
     }
@@ -909,15 +1005,27 @@ async function release(ctx: Context) {
       return;
     }
     case "submit": {
-      const result = await submit(project, options);
-      ui.result(result, () => {
+      const junit = stringFlag(ctx, "junit");
+      let result: SubmitResult;
+      try {
+        result = await submit(project, options);
+      } catch (error) {
+        // The checks stopped it: the report says which.
+        const checks = error instanceof ShipError ? (error.details?.checks as Check[] | undefined) : undefined;
+        if (junit && checks) await writeJUnit(junit, checksSuite("ship release submit", checks));
+        throw error;
+      }
+      if (junit) await writeJUnit(junit, checksSuite("ship release submit", result.checks));
+      const review = options.wait && !result.dryRun ? await waitForReview(project, { ...options, version: result.version }) : undefined;
+      ui.result(review ? { ...result, review } : result, () => {
         if (result.alreadyInReview) {
           console.log(`${result.version} is already with App Review. \`ship release status\` follows it.`);
           return;
         }
         printPrepare(result);
         printChecks(result.checks);
-        if (result.submitted) console.log(`Submitted ${result.version} for review (usually a day or two). \`ship release status\` follows it.`);
+        if (review) console.log(statusLines(review).join("\n"));
+        else if (result.submitted) console.log(`Submitted ${result.version} for review (usually a day or two). \`ship release status\` follows it.`);
         else if (result.dryRun) console.log(dryRunVerdict(result));
       });
       return;
@@ -975,6 +1083,9 @@ export const commands: Command[] = [
       "no-phased": { type: "boolean" },
       rename: { type: "boolean" },
       "dry-run": { type: "boolean" },
+      wait: { type: "boolean" },
+      timeout: { type: "string" },
+      junit: { type: "string" },
     },
     run: release,
   },

@@ -177,7 +177,7 @@ export class AscError extends ShipError {
     statusText = "",
     hint = ascHint(status, errors),
   ) {
-    super(ascMessage(status, errors, statusText), `api-${status}`, hint, { status, errors }, 1);
+    super(ascMessage(status, errors, statusText), `api-${status}`, hint, { status, errors });
   }
 }
 
@@ -291,6 +291,25 @@ export function clockSkew(date: string | null, now = Date.now()): number {
 /** "7 min ahead of" or "20 min behind" Apple's clock, for a skew from clockSkew. */
 const describeSkew = (skewMs: number) => `${Math.round(Math.abs(skewMs) / 60_000)} min ${skewMs < 0 ? "ahead of" : "behind"}`;
 
+// MARK: Read-only mode
+
+/** Set from --read-only or SHIP_READ_ONLY: every change to App Store Connect is refused before it's sent. */
+export const policy = { readOnly: false };
+
+/** Whether an environment value like SHIP_READ_ONLY turns a setting on: 1, true, yes, or on. */
+export const envOn = (value: string | undefined) => ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+
+/** Fails when read-only mode is on. `what` is the change, like "PATCH /v1/builds/123" or "upload build 42". */
+export function assertWritable(what: string): void {
+  if (!policy.readOnly) return;
+  throw new ShipError(
+    `Read-only mode is on, so ship won't ${what}`,
+    "read-only",
+    "Run it without --read-only (and with SHIP_READ_ONLY unset) to make the change, or with --dry-run (where the command has one) to see what it would do.",
+    { refused: what },
+  );
+}
+
 // MARK: Requests
 
 /**
@@ -304,6 +323,7 @@ export async function api<A = Record<string, unknown>>(method: Method, path: str
   if (new URL(url).host !== HOST) {
     throw new ShipError(`Refusing to send the API key to ${new URL(url).host}`, "bad-url", "ship only talks to api.appstoreconnect.apple.com.");
   }
+  if (method !== "GET") assertWritable(`send ${method} ${url.replace(BASE, "").split("?")[0]}`);
   let attempt = 0;
   let freshToken = false;
   /** Whether an earlier try may have done the work (a dropped answer or a server error). */

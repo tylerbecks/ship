@@ -3,7 +3,7 @@
 import { existsSync } from "node:fs";
 import { relative } from "node:path";
 import { lookupApp } from "../asc/apps";
-import { type Command } from "../command";
+import { type Command, stringFlag } from "../command";
 import { CONFIG_FILE, type Project, findConfigRoot, loadProject, loadSettings } from "../config";
 import { hasCredentials, serviceAccountToken } from "../credentials";
 import { run } from "../exec";
@@ -12,13 +12,16 @@ import { parseKeychainRef, runOp } from "../secrets";
 import { validateMedia } from "../store/media";
 import { validateStore } from "../store/metadata";
 import { readBetaInfo, testflightDir, validateBetaInfo } from "../store/testflight";
+import { checksSuite, writeJUnit } from "../junit";
 import { ShipError, ui } from "../ui";
 
-export const doctorHelp = `ship doctor [--app <name>]
+export const doctorHelp = `ship doctor [--app <name>] [--junit <path>]
 
 Checks everything ship needs: Xcode, altool, the API key and the Keychain
 items or 1Password it reads from, this repo's ship.json (or --app's), and
-(offline) the store folder, as the three validate commands would.`;
+(offline) the store folder, as the three validate commands would.
+
+  --junit <path>  Also write the checks as a JUnit report, for CI`;
 
 /** The store folder's offline checks (all three validates), when there is one. */
 export async function checkStore(project: Project): Promise<{ name: string; ok: boolean; detail: string; fix: string } | undefined> {
@@ -47,7 +50,7 @@ export async function checkStore(project: Project): Promise<{ name: string; ok: 
   };
 }
 
-export async function doctor(app?: string) {
+export async function doctor(app?: string, options: { junit?: string } = {}) {
   const checks: { name: string; ok: boolean; detail: string; fix?: string }[] = [];
   const add = (name: string, ok: boolean, detail: string, fix?: string) => checks.push({ name, ok, detail, fix });
 
@@ -117,6 +120,7 @@ export async function doctor(app?: string) {
   }
 
   const healthy = checks.every((c) => c.ok);
+  if (options.junit) await writeJUnit(options.junit, checksSuite("ship doctor", checks));
   ui.result({ healthy, checks }, () => {
     for (const c of checks) {
       console.log(`${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`);
@@ -131,8 +135,8 @@ export const commands: Command[] = [
     name: "doctor",
     index: [{ section: "setup", label: "doctor", summary: "Check that everything's ready" }],
     help: doctorHelp,
-    flags: {},
+    flags: { junit: { type: "string" } },
     maxArgs: 0,
-    run: (ctx) => doctor(ctx.app),
+    run: (ctx) => doctor(ctx.app, { junit: stringFlag(ctx, "junit") }),
   },
 ];

@@ -6,22 +6,27 @@
 // src/commands (listed in src/commands/index.ts).
 
 import pkg from "../package.json";
-import { checkArgs, findCommand, parseFlags, renderIndex, splitCommand } from "./command";
+import { envOn, policy } from "./asc/client";
+import { checkArgs, commandJSON, findCommand, indexJSON, parseFlags, renderIndex, splitCommand } from "./command";
 import { commands } from "./commands";
 import { ShipError, ui } from "./ui";
 
 const help = () => renderIndex(commands, pkg.version);
+
+/** Help for people, or with --json, as data for agents. */
+function printHelp(name?: string) {
+  const command = findCommand(commands, name);
+  if (ui.json) return ui.result(command ? { command: commandJSON(command) } : indexJSON(commands, pkg.version));
+  console.log(command?.help ?? help());
+}
 
 async function main(argv: string[]) {
   // Set before parsing, so even a usage error comes back as JSON.
   ui.json = argv.includes("--json");
   if (argv[0] === "--version" || argv[0] === "-v") return console.log(pkg.version);
   const { name: first, rest } = splitCommand(argv, [...commands.map((command) => command.name), "help"]);
-  if (!first && (rest.includes("--help") || rest.includes("-h"))) return console.log(help());
-  if (first === "help") {
-    console.log(findCommand(commands, rest.find((arg) => !arg.startsWith("-")))?.help ?? help());
-    return;
-  }
+  if (!first && (rest.includes("--help") || rest.includes("-h"))) return printHelp();
+  if (first === "help") return printHelp(rest.find((arg) => !arg.startsWith("-")));
   const name = first ?? "status";
   const command = findCommand(commands, name);
   if (!command) {
@@ -31,12 +36,14 @@ async function main(argv: string[]) {
   const { values, positionals } = parseFlags(rest, command.flags);
   ui.json = values.json === true;
   ui.quiet = values.quiet === true;
-  if (values.help) return console.log(command.help);
+  policy.readOnly = values["read-only"] === true || envOn(process.env.SHIP_READ_ONLY);
+  if (values.help) return printHelp(name);
   if (command.maxArgs !== undefined) {
     const takes = command.maxArgs === 0 ? "no arguments" : `at most ${command.maxArgs}`;
     checkArgs(positionals, command.maxArgs, `ship ${name} takes ${takes}`, `See \`ship ${name} --help\`.`);
   }
-  const app = typeof values.app === "string" ? values.app : undefined;
+  // --app wins; SHIP_APP is the default for a shell or CI job that works on one app.
+  const app = typeof values.app === "string" ? values.app : process.env.SHIP_APP?.trim() || undefined;
   const implicit = !first;
   try {
     await command.run({ args: positionals, flags: values, app, implicit });

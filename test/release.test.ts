@@ -26,10 +26,13 @@ import {
   prepare,
   releaseNow,
   releaseStatus,
+  reviewOutcome,
   statusLines,
   commands as releaseCommands,
   submit,
+  waitForReview,
 } from "../src/commands/release";
+import { polling } from "../src/wait";
 import { commands as versionCommands } from "../src/commands/version";
 import type { Project } from "../src/config";
 import { ShipError, ui } from "../src/ui";
@@ -1189,5 +1192,113 @@ describe("ship release and ship version arguments", () => {
     expect(error).toMatchObject({ code: "usage", exitCode: 2 });
     expect(error.hint).toContain("ship release prepare and ship release submit");
     expect((await run("release", ["status"], { push: true })).code).toBe("usage");
+  });
+});
+
+describe("waiting for App Review", () => {
+  let mock: ReturnType<typeof mockAsc> | undefined;
+  let delay: ReturnType<typeof noRetryDelay>;
+  let project: Project;
+  const realPolling = { ...polling };
+  const live = versionResource("v13", "1.3", "READY_FOR_DISTRIBUTION", { createdDate: "2026-09-01T00:00:00Z" }, "b30");
+
+  /** A world where 1.4 is in review until `after` looks, then `state`. */
+  function reviewWorld(state: string, after: number, submissionAfter = state === "REJECTED" ? "UNRESOLVED_ISSUES" : "COMPLETE") {
+    const world: World = {
+      versions: [versionResource("v14", "1.4", "WAITING_FOR_REVIEW", {}, "b37"), live],
+      builds: [],
+      submissions: [{ id: "s1", state: "WAITING_FOR_REVIEW", versionIds: ["v14"], submittedDate: "2026-10-21T10:00:00Z" }],
+    };
+    let now = 0;
+    let sleeps = 0;
+    polling.now = () => now;
+    polling.sleep = async (ms) => {
+      now += ms;
+      if (++sleeps === after) {
+        world.versions = [versionResource("v14", "1.4", state, {}, "b37"), live];
+        world.submissions = submissionAfter === "COMPLETE" ? [] : [{ id: "s1", state: submissionAfter, versionIds: ["v14"] }];
+      }
+    };
+    return world;
+  }
+
+  beforeEach(async () => {
+    await testCredentials();
+    delay = noRetryDelay();
+    ui.quiet = true;
+    project = fakeProject();
+  });
+
+  afterEach(() => {
+    mock?.restore();
+    mock = undefined;
+    delay.restore();
+    Object.assign(polling, realPolling);
+    ui.quiet = false;
+  });
+
+  test("what App Review's state means", () => {
+    const at = (state: string, submission?: string) =>
+      reviewOutcome({
+        version: { id: "v", versionString: "1.4", state, releaseType: null, earliestReleaseDate: null, build: null },
+        submission: submission ? { id: "s", state: submission, submittedDate: null } : null,
+      });
+    expect(at("WAITING_FOR_REVIEW")).toBe("pending");
+    expect(at("IN_REVIEW")).toBe("pending");
+    // Just submitted: the version's state can lag the submission's.
+    expect(at("READY_FOR_REVIEW", "WAITING_FOR_REVIEW")).toBe("pending");
+    expect(at("PENDING_DEVELOPER_RELEASE")).toBe("approved");
+    expect(at("READY_FOR_DISTRIBUTION")).toBe("approved");
+    expect(at("REJECTED")).toBe("rejected");
+    expect(at("PREPARE_FOR_SUBMISSION", "UNRESOLVED_ISSUES")).toBe("rejected");
+    expect(at("PREPARE_FOR_SUBMISSION")).toBe("not-in-review");
+    expect(at("READY_FOR_REVIEW", "READY_FOR_REVIEW")).toBe("not-in-review");
+    expect(reviewOutcome({ version: null, submission: null })).toBe("not-in-review");
+  });
+
+  test("waits until it's approved, then follows that version", async () => {
+    mock = mockAsc(asc(reviewWorld("PENDING_DEVELOPER_RELEASE", 2)));
+    const result = await waitForReview(project, { now: NOW });
+    expect(result).toMatchObject({ outcome: "approved", waitedSeconds: 120, version: { versionString: "1.4", state: "PENDING_DEVELOPER_RELEASE" } });
+    expect(writes(mock.calls)).toEqual([]);
+  });
+
+  test("a rejection fails with what App Review said to do", async () => {
+    mock = mockAsc(asc(reviewWorld("REJECTED", 1)));
+    const error = await rejected(waitForReview(project, { now: NOW }));
+    expect(error).toMatchObject({ code: "review-rejected", exitCode: 1, message: "App Review rejected 1.4" });
+    expect((error.details?.status as { version: { state: string } }).version.state).toBe("REJECTED");
+  });
+
+  test("still in review at the timeout exits 7", async () => {
+    mock = mockAsc(asc(reviewWorld("ACCEPTED", 99)));
+    const error = await rejected(waitForReview(project, { now: NOW, timeoutMs: 3 * 60_000 }));
+    expect(error).toMatchObject({ code: "still-pending", exitCode: 7, message: "1.4 is still waiting for review after 3 minutes" });
+    expect(error.hint).toContain("ship release --wait --version 1.4");
+  });
+
+  test("nothing in review is an error, not a wait", async () => {
+    mock = mockAsc(asc({ versions: [versionResource("v14", "1.4", "PREPARE_FOR_SUBMISSION"), live], builds: [], submissions: [] }));
+    const error = await rejected(waitForReview(project, { now: NOW }));
+    expect(error).toMatchObject({ code: "not-in-review", message: "Nothing to wait for: 1.4 is being prepared" });
+    expect(error.hint).toBe("Submit it first: ship release submit --wait");
+  });
+
+  test("--wait and --timeout are checked before anything is sent", async () => {
+    mock = mockAsc(() => undefined);
+    const command = releaseCommands[0]!;
+    const run = async (args: string[], flags: Record<string, string | boolean>) => {
+      try {
+        await command.run({ args, flags, implicit: false });
+      } catch (error) {
+        return error as ShipError;
+      }
+      throw new Error("expected an error");
+    };
+    expect((await run(["status"], { timeout: "2h" })).message).toBe("--timeout goes with --wait");
+    expect((await run(["submit"], { wait: true, "dry-run": true })).message).toBe("--wait waits for a real submission");
+    expect((await run(["status"], { wait: true, timeout: "soon" })).code).toBe("usage");
+    expect((await run(["prepare"], { wait: true })).message).toBe("--wait isn't for ship release prepare");
+    expect(mock.calls).toEqual([]);
   });
 });

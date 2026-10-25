@@ -14,7 +14,7 @@ ship metadata push                 # edit them in a pull request, then push
 ship release submit --push         # push appstore/, attach the build, check, and submit for review
 ```
 
-Everything you'd otherwise click through in App Store Connect lives in the repo or behind a command: builds, testers, groups, feedback, the App Store page, screenshots, and releases.
+Everything you'd otherwise click through in App Store Connect lives in the repo or behind a command: builds, testers, groups, feedback, the App Store page, screenshots, releases, and customer reviews. For the rest, `ship api` sends one signed request to any endpoint.
 
 ## Install
 
@@ -35,7 +35,7 @@ ship auth set --key-id ABC123DEFG \
 
 `--keychain` copies the key into the macOS login Keychain (item `ship` / `asc-private-key-<key id>`) and saves a reference to it, so the `.p8` can be deleted. Settings live in `~/.config/ship/config.json`, which holds only references, never the key. See [Secrets](#secrets) for the other places the key can live.
 
-**Once per repo:** `ship init` at the repo root. It finds the `.xcodeproj`, `.xcworkspace`, or App Playground `.swiftpm` package, the scheme that builds the app, its bundle id, and its platform, and writes `ship.json`. Commit it: every clone and worktree is then set up. When there's more than one choice, it lists them and the flag to pass. `ship remove` undoes it; `ship apps` lists every app set up on this machine, and `--app <name>` targets one from anywhere. Running `ship init` in a git worktree registers the repo's main checkout, so an app is listed once however many worktrees it has.
+**Once per repo:** `ship init` at the repo root. It finds the `.xcodeproj`, `.xcworkspace`, or App Playground `.swiftpm` package, the scheme that builds the app, its bundle id, and its platform, and writes `ship.json`. Commit it: every clone and worktree is then set up. When there's more than one choice, it lists them and the flag to pass. `ship remove` undoes it; `ship apps` lists every app set up on this machine, and `--app <name>` targets one from anywhere (by name, bundle id, or App Store Connect id). `SHIP_APP` sets a default `--app` for a shell or CI job that works on one app; `ship remove` only takes `--app` itself. Running `ship init` in a git worktree registers the repo's main checkout, so an app is listed once however many worktrees it has.
 
 `ship doctor` checks everything, including (offline) the store folder.
 
@@ -141,7 +141,7 @@ To skip Xcode's check in a repo that has decided to trust its packages, as CI do
 
 `ship builds` lists the app's builds, newest first: the commit each came from, processing, internal and external TestFlight state, and when it expires (TestFlight builds last 90 days). Expired builds are hidden unless you pass `--expired` or `--all`; `--version 1.2`, `--processing`, `--failed`, and `--limit` narrow the list. `ship status` shows the same EXPIRES column and says when the newest build expires within a week.
 
-`ship builds show 42` prints one build in detail: What to Test for each language, the groups it's in, Beta App Review, and the App Store version it's attached to. Build numbers only have to be unique within a version, so when two versions share one, pass `--version`.
+`ship builds show 42` prints one build in detail: What to Test for each language, the groups it's in, Beta App Review, and the App Store version it's attached to. Build numbers only have to be unique within a version, so when two versions share one, pass `--version`. `--wait` first waits for App Store Connect to process the build (after `ship beta --no-wait`, say), up to `--timeout` (default `1h`; `90s`, `30m`, `2h`, and `1d` work), and exits 7 if it's still processing then.
 
 `ship builds expire` takes builds out of TestFlight. Testers can't install them anymore, and it can't be undone:
 
@@ -318,18 +318,59 @@ ship release go                     # release it, if it waits for you after appr
 
 **Phased release.** `--phased` releases the update over 7 days to people with automatic updates on (1%, 2%, 5%, 10%, 20%, 50%, 100%); anyone can still download it from the App Store. `--no-phased` releases to everyone at once (until the release starts). Once it's rolling out, `ship release phased pause`, `resume`, and `complete` (everyone, now) control it.
 
+**Waiting for App Review.** `ship release --wait` (or `ship release submit --wait`) checks once a minute until App Review decides: it exits 0 once the version is approved, 1 when it's rejected (`review-rejected`) or nothing is in review (`not-in-review`), and 7 when it's still in review at `--timeout` (default `24h`). With `--json`, the status comes back with `outcome` and `waitedSeconds`; `ship release submit --wait --json` puts it under `review`.
+
 **`ship release cancel`** takes a submission out of review, so you can change it and submit again.
 
 **`ship version`** shows the app's version, and `ship version bump major|minor|patch` or `ship version set 1.5` changes it: `MARKETING_VERSION` in every target of the Xcode project (extensions must match the app, so they're brought in line), or `displayVersion` in an App Playground's `Package.swift`. ship doesn't commit; commit the change before `ship beta`.
 
 Everything has `--json`. `ship release --json` returns `{ version, live, submission, phasedRelease }`; `ship release submit --json` adds `checks` (`{ name, ok, detail, blocking, fix }`), `submission`, `submitted`, and `alreadyInReview`.
 
+## Customer reviews
+
+```
+ship reviews                                   # newest first: stars, store, title, whether you've replied
+ship reviews --rating 1 --rating 2 --unanswered
+ship reviews show <id>                         # the whole review and your reply
+ship reviews reply <id> --text "Thanks! Fixed in 1.5."
+ship reviews unreply <id>
+```
+
+`--territory USA` narrows to one App Store, `--sort` takes `newest`, `oldest`, `lowest`, or `highest`, and `--limit` goes up to 200. `reply` replaces the reply a review has; Apple checks replies before they show (`PENDING_PUBLISH`), and takes up to 5,970 characters. `--text-file <path>` (or `-` for stdin) reads the reply from a file, and `--dry-run` shows it without sending. Reading reviews needs a key with the Customer Support, App Manager, or Admin role.
+
+## Anything else: `ship api`
+
+For what ship has no command for yet, `ship api` sends one request to the [App Store Connect API](https://developer.apple.com/documentation/appstoreconnectapi), signed with ship's key and retried like every other request, and prints Apple's JSON as it came back. `{app}` in the path is the app's App Store Connect id:
+
+```
+ship api /v1/apps/{app}/appStoreVersions
+ship api /v1/apps/{app}/builds --all                      # every page
+ship api PATCH /v1/builds/<id> --body-file build.json     # or --body '{"data": …}', or --body-file - for stdin
+ship api DELETE /v1/betaTesters/<id>
+```
+
 ## For agents
 
 - Every command takes `--json`: stdout is one JSON object, `{ "ok": true, ... }` or `{ "ok": false, "error": { "code", "message", "hint", ... } }`; progress goes to stderr.
 - Nothing prompts. When a choice is needed, the error lists `choices` and the flag to pass.
-- Exit codes: 0 success, 1 failure, 2 usage error.
+- Exit codes say what kind of failure it was, so a script needn't parse the error:
+
+  | Code | Meaning |
+  |---|---|
+  | 0 | success |
+  | 1 | anything else (a build failed, a check failed, App Review rejected it) |
+  | 2 | usage: a bad flag or argument |
+  | 3 | the API key is missing, wrong, or its role can't do this (`api-401`, `api-403`, `no-credentials`) |
+  | 4 | not found: the app, build, version, group, review… (`api-404`, `no-build`, `unknown-app`, …) |
+  | 5 | conflict: App Store Connect refused it in the state things are in (`api-409`, `build-in-use`, …) |
+  | 6 | read-only mode refused a change |
+  | 7 | still pending when a `--wait` timed out (`still-pending`, `processing-timeout`) |
+
+  The JSON error has it too, as `exitCode`.
+- `--read-only` (or `SHIP_READ_ONLY=1`) makes any command safe to try: reads work, and anything that would change App Store Connect (a POST, PATCH, or DELETE, or an upload) stops before it's sent, with code `read-only`. `ship beta` checks before it archives. Files in the repo, git, and the Keychain aren't App Store Connect, so `pull`, `ship version bump`, and `ship secret set` still write.
+- `ship help --json` lists every command (its usage lines, flags, and help), the global flags, and the exit codes; `ship <command> --help --json` gives one.
+- `--junit <path>` writes the checks of `ship release submit`, `ship doctor`, and the three `validate`s as a JUnit report, for CI to show as test results: what would block a release fails, and warnings pass with the warning as output.
 - App Store Connect errors keep Apple's code (`api-409`), with `status` and Apple's `errors` array in the JSON. ship retries when Apple is busy (429, 5xx) and on network failures for requests that are safe to repeat.
-- `--dry-run` shows what `ship beta`, `ship builds expire`, the three `push`es, `ship release`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
+- `--dry-run` shows what `ship beta`, `ship builds expire`, the three `push`es, `ship release`, `ship reviews reply`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
 - `ship metadata diff`, `ship screenshots diff`, and `ship testflight diff` take `--exit-code` (exit 1 when there are changes), for a CI check that the store folder and App Store Connect agree.
 - A flag an action doesn't take is a usage error, never ignored.
