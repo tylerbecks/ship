@@ -221,17 +221,30 @@ export function matchApps(apps: AppEntry[], query: string): AppEntry[] {
   return apps.filter((app) => app.name.toLowerCase() === q || app.bundleId.toLowerCase() === q);
 }
 
+/** Apps whose ship.json has `ascAppId` (App Store Connect's numeric id, like 1234567890). */
+async function appsWithAscId(apps: AppEntry[], ascAppId: string): Promise<AppEntry[]> {
+  const found = await Promise.all(
+    apps.map(async (app) => {
+      const config = await readJSON<Partial<ProjectConfig> | null>(join(app.root, CONFIG_FILE), null).catch(() => null);
+      return config?.ascAppId === ascAppId ? app : undefined;
+    }),
+  );
+  return found.filter((app): app is AppEntry => Boolean(app));
+}
+
 /**
- * The app `--app <query>` means: a name or bundle id, ignoring case. Two
- * different apps with the name is an error naming their bundle ids; the same
- * app in two clones picks the one whose ship.json is there.
+ * The app `--app <query>` means: a name or bundle id, ignoring case, or the
+ * App Store Connect id in its ship.json. Two different apps with the name is
+ * an error naming their bundle ids; the same app in two clones picks the one
+ * whose ship.json is there.
  */
 export async function findApp(query: string): Promise<AppEntry> {
   const apps = await loadApps();
-  const matches = matchApps(apps, query);
+  let matches = matchApps(apps, query);
+  if (!matches.length && /^\d+$/.test(query.trim())) matches = await appsWithAscId(apps, query.trim());
   if (!matches.length) {
     throw new ShipError(
-      `No app called "${query}" on this machine`,
+      /^\d+$/.test(query.trim()) ? `No app on this machine has App Store Connect id ${query.trim()}` : `No app called "${query}" on this machine`,
       "unknown-app",
       apps.length ? `Known apps: ${apps.map((a) => a.name).join(", ")}. See \`ship apps\`.` : "Run `ship init` in the app's repo first.",
       { choices: apps.map((a) => a.name) },

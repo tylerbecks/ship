@@ -11,13 +11,14 @@ import { parsePlatform } from "../platform";
 import { LOCALE_PATTERN } from "../store/files";
 import { PREVIEW_TYPES, SCREENSHOT_TYPES, isPreviewType, isScreenshotType } from "../store/images";
 import { type MediaOptions, diffMedia, pullMedia, renderMediaChanges, syncMedia, validateMedia } from "../store/media";
+import { problemsSuite, writeJUnit } from "../junit";
 import { ShipError, ui } from "../ui";
 import { appId } from "./status";
 
 export const screenshotsHelp = `ship screenshots pull [--version <x.y>] [--locale <code>] [--force]
 ship screenshots diff [--version <x.y>] [--locale <code>] [--type <TYPE>] [--prune] [--exit-code]
 ship screenshots push [--version <x.y>] [--locale <code>] [--type <TYPE>] [--prune] [--dry-run] [--no-wait]
-ship screenshots validate
+ship screenshots validate [--junit <path>]
 
 Keeps the App Store screenshots and app previews in the repo, next to the
 page's text:
@@ -40,7 +41,8 @@ file matches which upload; commit it.
   --dry-run          push: show the changes without making them
   --no-wait          push: don't wait for App Store Connect to process uploads
   --force            pull: overwrite local files that differ
-  --exit-code        diff: exit 1 when there are changes (for CI)`;
+  --exit-code        diff: exit 1 when there are changes (for CI)
+  --junit <path>     validate: also write the problems as a JUnit report, for CI`;
 
 const ACTIONS = ["pull", "diff", "push", "validate"];
 
@@ -49,7 +51,7 @@ const ACTION_FLAGS: Record<string, string[]> = {
   pull: ["version", "force"],
   diff: ["version", "prune", "exit-code"],
   push: ["version", "prune", "dry-run", "no-wait"],
-  validate: [],
+  validate: ["junit"],
 };
 
 const usage = (message: string, hint: string, details?: Record<string, unknown>) => new ShipError(message, "usage", hint, details, 2);
@@ -164,6 +166,8 @@ async function validate(ctx: Context) {
   const platform = stringFlag(ctx, "platform");
   const { problems, files } = await validateMedia(project.storeDir, { ...filters(ctx), platform: platform ? parsePlatform(platform) : project.platform });
   const valid = !problems.some((problem) => problem.severity === "error");
+  const junit = stringFlag(ctx, "junit");
+  if (junit) await writeJUnit(junit, problemsSuite("ship screenshots validate", problems));
   ui.result({ valid, problems }, () => {
     for (const problem of problems) console.log(`${problem.severity === "error" ? "✗" : "!"} ${problem.file}: ${problem.message}`);
     if (valid) console.log(`✓ ${files} file${files === 1 ? "" : "s"} in ${where(project, project.storeDir)}/ look ready${problems.length ? " (see the warnings)" : ""}.`);
@@ -186,6 +190,7 @@ export const commands: Command[] = [
       force: { type: "boolean" },
       "no-wait": { type: "boolean" },
       "exit-code": { type: "boolean" },
+      junit: { type: "string" },
     },
     run: async (ctx) => {
       const action = ctx.args[0];

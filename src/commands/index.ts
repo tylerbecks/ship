@@ -2,6 +2,7 @@
 // A new command group is a new file in src/commands plus one line here.
 
 import type { Command } from "../command";
+import { commands as api } from "./api";
 import { commands as apps } from "./apps";
 import { commands as archive } from "./archive";
 import { commands as auth } from "./auth";
@@ -14,6 +15,7 @@ import { commands as init } from "./init";
 import { commands as metadata } from "./metadata";
 import { commands as open } from "./open";
 import { commands as release } from "./release";
+import { commands as reviews } from "./reviews";
 import { commands as screenshots } from "./screenshots";
 import { commands as secret } from "./secret";
 import { commands as status } from "./status";
@@ -44,4 +46,7 @@ export const commands: Command[] = [
   ...metadata,
   ...screenshots,
   ...release,
+  ...reviews,
+  // Anything else
+  ...api,
 ];

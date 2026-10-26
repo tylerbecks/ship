@@ -5,6 +5,55 @@
 // error), and progress still goes to stderr, so scripts and Claude can parse
 // stdout without filtering.
 
+/**
+ * Exit codes by kind of failure, so a script can tell "Apple said no" from
+ * "it isn't there" without parsing the error. Everything else exits 1.
+ */
+export const EXIT = {
+  failure: 1,
+  usage: 2,
+  /** The API key is missing, wrong, or not allowed to do this. */
+  auth: 3,
+  /** The app, build, version, or other thing isn't there. */
+  notFound: 4,
+  /** App Store Connect refused it in the state things are in (it exists, it's in use, it's in review). */
+  conflict: 5,
+  /** --read-only (or SHIP_READ_ONLY) stopped a change before it was sent. */
+  readOnly: 6,
+  /** A wait ran out of time while things were still in progress. */
+  pending: 7,
+} as const;
+
+const EXIT_BY_CODE: Record<string, number> = {
+  usage: EXIT.usage,
+  ...Object.fromEntries(["api-401", "api-403", "no-credentials", "bad-key", "missing-key-file"].map((code) => [code, EXIT.auth])),
+  ...Object.fromEntries(
+    [
+      "api-404",
+      "unknown-app",
+      "no-asc-app",
+      "no-build",
+      "no-feedback",
+      "no-group",
+      "no-version",
+      "no-live-version",
+      "no-localization",
+      "no-media-set",
+      "no-phased-release",
+      "no-review",
+      "no-reply",
+    ].map((code) => [code, EXIT.notFound]),
+  ),
+  ...Object.fromEntries(
+    ["api-409", "build-in-use", "group-exists", "submission-in-progress", "version-in-flight", "version-in-progress"].map((code) => [code, EXIT.conflict]),
+  ),
+  "read-only": EXIT.readOnly,
+  ...Object.fromEntries(["processing-timeout", "still-pending"].map((code) => [code, EXIT.pending])),
+};
+
+/** The exit code for an error code: its kind's (see EXIT), else 1. */
+export const exitCodeFor = (code: string): number => EXIT_BY_CODE[code] ?? EXIT.failure;
+
 export class ShipError extends Error {
   constructor(
     message: string,
@@ -14,8 +63,8 @@ export class ShipError extends Error {
     readonly hint?: string,
     /** Extra data for `--json`, like the choices to pick from. */
     readonly details?: Record<string, unknown>,
-    /** 2 for a usage mistake, 1 for everything else. */
-    readonly exitCode = 1,
+    /** 2 for a usage mistake; otherwise the code's kind (see EXIT), else 1. */
+    readonly exitCode = exitCodeFor(code),
   ) {
     super(message);
   }
@@ -76,6 +125,7 @@ export const ui = {
               code: shipError.code,
               message: shipError.message,
               hint: shipError.hint,
+              exitCode: shipError.exitCode,
               ...shipError.details,
             },
           },

@@ -3,9 +3,10 @@
 
 import { existsSync } from "node:fs";
 import { relative } from "node:path";
-import { type Command, type Context, boolFlag, checkActionFlags, listFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags, listFlag, stringFlag } from "../command";
 import { loadProject } from "../config";
 import { changesJSON, renderChanges } from "../diff";
+import { problemsSuite, writeJUnit } from "../junit";
 import { diffBetaInfo, pullBetaInfo, pushBetaInfo, readBetaInfo, testflightDir, validateBetaInfo } from "../store/testflight";
 import { ShipError, ui } from "../ui";
 import { appId } from "./status";
@@ -13,7 +14,7 @@ import { appId } from "./status";
 export const testflightHelp = `ship testflight pull [--force]
 ship testflight diff [--exit-code]
 ship testflight push [--dry-run] [--locale <code>] [--prune]
-ship testflight validate
+ship testflight validate [--junit <path>]
 
 Keeps TestFlight's test information in the repo, in appstore/testflight/:
 what testers see about the beta (description, feedback email, marketing
@@ -34,7 +35,8 @@ change any time.
   --exit-code      diff: exit 1 when there are changes
   --dry-run        push: show what would change, change nothing
   --locale <code>  push: only this language (repeatable)
-  --prune          push: delete languages that have no folder here`;
+  --prune          push: delete languages that have no folder here
+  --junit <path>   validate: also write the problems as a JUnit report, for CI`;
 
 const ACTIONS = ["pull", "diff", "push", "validate"];
 
@@ -42,7 +44,7 @@ const ACTION_FLAGS: Record<string, string[]> = {
   pull: ["force"],
   diff: ["exit-code"],
   push: ["dry-run", "locale", "prune"],
-  validate: [],
+  validate: ["junit"],
 };
 
 export async function testflight(ctx: Context) {
@@ -66,6 +68,8 @@ export async function testflight(ctx: Context) {
     if (!existsSync(dir)) throw new ShipError(`There's no ${shown} yet`, "no-store", "Make it from App Store Connect with `ship testflight pull`.");
     const problems = validateBetaInfo(await readBetaInfo(dir));
     const valid = !problems.some((p) => p.severity === "error");
+    const junit = stringFlag(ctx, "junit");
+    if (junit) await writeJUnit(junit, problemsSuite("ship testflight validate", problems));
     ui.result({ valid, problems }, () => {
       if (!problems.length) return console.log(`${shown} looks good.`);
       for (const p of problems) console.log(`${p.severity === "error" ? "✗" : "!"} ${p.file}${p.field ? ` (${p.field})` : ""}: ${p.message}`);
@@ -125,6 +129,7 @@ export const commands: Command[] = [
       "dry-run": { type: "boolean" },
       prune: { type: "boolean" },
       "exit-code": { type: "boolean" },
+      junit: { type: "string" },
     },
     run: testflight,
   },

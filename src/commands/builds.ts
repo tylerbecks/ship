@@ -19,16 +19,20 @@ import { buildCommits, fetchBuildTags } from "../git";
 import { checkBuildNumber } from "../build";
 import { type AscPlatform, platformInfo } from "../platform";
 import { ShipError, table, ui } from "../ui";
+import { parseDuration } from "../wait";
+import { waitForProcessing } from "./beta";
 import { appId, friendly, printBuilds } from "./status";
 
 export const buildsHelp = `ship builds [--version <x.y>] [--limit <n>] [--processing | --failed] [--expired | --all]
-ship builds show <n> [--version <x.y>]
+ship builds show <n> [--version <x.y>] [--wait [--timeout <time>]]
 ship builds expire <n>... [--dry-run]
 ship builds expire --older-than <age> [--keep <n>] [--version <x.y>] [--dry-run]
 
 Lists the app's builds, newest first, with the commit each came from, its
 TestFlight state, and when it expires. show prints one build in detail:
 What to Test, groups, Beta App Review, and the App Store version it's in.
+With --wait, it first waits for App Store Connect to process the build
+(exit 7 if it's still processing at --timeout, default 1h).
 
 expire takes builds out of TestFlight: testers can't install them anymore,
 and it can't be undone. Pick builds by number or by age (like 30d, 2w, or
@@ -43,7 +47,9 @@ version in review, waiting to release, or live are never expired.
   --all               Include expired builds
   --older-than <age>  expire: builds uploaded longer ago than this
   --keep <n>          expire: keep the newest n valid builds (default 1)
-  --dry-run           expire: show what would expire`;
+  --dry-run           expire: show what would expire
+  --wait              show: wait for the build to finish processing first
+  --timeout <time>    show --wait: how long to wait, like 30m or 2h (default 1h)`;
 
 const ACTIONS = ["list", "show", "expire"];
 
@@ -64,6 +70,7 @@ function checkFlagsFor(ctx: Context, action: string) {
   const only: Record<string, string[]> = {
     list: ["limit", "processing", "failed", "expired", "all"],
     expire: ["older-than", "keep", "dry-run"],
+    show: ["wait", "timeout"],
   };
   for (const [owner, names] of Object.entries(only)) {
     if (owner === action) continue;
@@ -109,9 +116,16 @@ export async function showCommand(ctx: Context) {
   if (!number) throw usage("Which build? ship builds show <n>", "`ship builds` lists the build numbers.");
   if (extra.length) throw usage(`show takes one build number, not ${ctx.args.length - 1}`, `For example: ship builds show ${number}`);
   checkBuildNumber(number);
+  const timeout = stringFlag(ctx, "timeout");
+  if (timeout !== undefined && !boolFlag(ctx, "wait")) throw usage("--timeout goes with --wait", `For example: ship builds show ${number} --wait --timeout 30m`);
+  const timeoutMs = timeout === undefined ? undefined : parseDuration(timeout);
   const project = await loadProject({ app: ctx.app });
   const id = await appId(project);
   const version = stringFlag(ctx, "version");
+  if (boolFlag(ctx, "wait")) {
+    const later = `ship builds show ${number}${version ? ` --version ${version}` : ""} --wait`;
+    await waitForProcessing(id, number, platformInfo(project.platform).asc, { timeoutMs, later, version });
+  }
   const matches = await buildDetails(id, number, { version, platform: platformInfo(project.platform).asc });
   const build = (await withCommits(project, [pickOne(number, matches, version)]))[0]!;
   ui.result({ build }, () => printDetail(build));
@@ -342,6 +356,8 @@ export const commands: Command[] = [
       expired: { type: "boolean" },
       all: { type: "boolean" },
       "dry-run": { type: "boolean" },
+      wait: { type: "boolean" },
+      timeout: { type: "string" },
     },
     run: async (ctx) => {
       const action = ctx.args[0] ?? "list";

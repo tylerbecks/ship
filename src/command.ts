@@ -5,13 +5,13 @@
 // the arguments, finds the command, and calls its `run`.
 
 import { parseArgs } from "node:util";
-import { ShipError } from "./ui";
+import { EXIT, ShipError } from "./ui";
 
 /** A command's flags, in node:util parseArgs form. Global flags are added for you. */
 export type FlagSpec = Record<string, { type: "string" | "boolean"; short?: string; multiple?: boolean }>;
 
 /** Where a command is listed in `ship --help`. */
-export type Section = "setup" | "daily" | "testflight" | "appstore";
+export type Section = "setup" | "daily" | "testflight" | "appstore" | "other";
 
 export interface Context {
   /** Positionals after the command name: ["add", "a@example.com"] for `ship testers add a@example.com`. */
@@ -42,6 +42,7 @@ export const globalFlags = {
   json: { type: "boolean" },
   quiet: { type: "boolean" },
   app: { type: "string" },
+  "read-only": { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const satisfies FlagSpec;
 
@@ -167,13 +168,47 @@ const SECTIONS: { section: Section; title: string }[] = [
   { section: "daily", title: "Every day:" },
   { section: "testflight", title: "TestFlight:" },
   { section: "appstore", title: "App Store:" },
+  { section: "other", title: "Anything else:" },
 ];
 
 const GLOBAL_HELP = `Flags for every command:
   --json        One JSON object on stdout (progress goes to stderr)
   --app <name>  Use an app from \`ship apps\` instead of the current repo
+  --read-only   Change nothing in App Store Connect (or SHIP_READ_ONLY=1)
   --quiet       Only the result
   --help        Help for a command, e.g. \`ship beta --help\``;
+
+/** What `--json` help says about the global flags. */
+const GLOBAL_FLAGS_JSON = [
+  { name: "json", type: "boolean", summary: "One JSON object on stdout (progress goes to stderr)" },
+  { name: "app", type: "string", summary: "An app from `ship apps` (name, bundle id, or App Store Connect id) instead of the current repo; SHIP_APP sets a default" },
+  { name: "read-only", type: "boolean", summary: "Change nothing in App Store Connect; SHIP_READ_ONLY=1 does the same" },
+  { name: "quiet", type: "boolean", summary: "Only the result" },
+  { name: "help", type: "boolean", summary: "Help for a command" },
+];
+
+/** A command for `ship help --json`: where it's listed, its usage lines, and its flags. */
+export function commandJSON(command: Command) {
+  const usage = command.help.split("\n\n")[0]!.split("\n").filter((line) => line.startsWith("ship "));
+  return {
+    name: command.name,
+    index: command.index,
+    usage,
+    flags: Object.entries(command.flags).map(([name, spec]) => ({ name, type: spec.type, ...(spec.multiple ? { multiple: true } : {}) })),
+    help: command.help,
+  };
+}
+
+/** `ship help --json`: every command, for agents to discover what ship can do. */
+export function indexJSON(commands: Command[], version: string) {
+  return {
+    version,
+    sections: SECTIONS.map(({ section, title }) => ({ section, title: title.replace(/:$/, "") })),
+    commands: commands.map(commandJSON),
+    globalFlags: GLOBAL_FLAGS_JSON,
+    exitCodes: { 0: "success", ...Object.fromEntries(Object.entries(EXIT).map(([kind, code]) => [code, kind])) },
+  };
+}
 
 /** One `ship --help` line: the command padded to 24 columns (at least two spaces), then the summary. */
 export function indexLine(label: string, summary: string): string {

@@ -21,6 +21,8 @@ for (const name of Object.keys(process.env)) {
   if (name.startsWith("SHIP_ASC_")) delete process.env[name];
 }
 delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+delete process.env.SHIP_APP;
+delete process.env.SHIP_READ_ONLY;
 
 /** Any request a test didn't mock fails loudly instead of reaching App Store Connect. */
 export const networkGuard = (async (input: string | URL | Request) => {

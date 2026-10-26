@@ -1,7 +1,8 @@
 // ship beta and ship distribute: archive, upload, and send a build to TestFlight.
 
 import { join, relative } from "node:path";
-import { type Build, findBuild, highestBuildNumber, setExemptEncryption } from "../asc/builds";
+import { type Build, findBuild, highestBuildNumber, listBuilds, setExemptEncryption } from "../asc/builds";
+import { assertWritable } from "../asc/client";
 import { addBuildToGroup, betaGroups, setWhatToTest, submitForBetaReview } from "../asc/testflight";
 import { archive, buildPaths, checkBuildNumber, checkInfo, exportIPA, packageInfo, upload, withKeyFile } from "../build";
 import { type Project, loadProject, repoRoot } from "../config";
@@ -11,6 +12,7 @@ import { type Command, boolFlag, checkArgs, stringFlag } from "../command";
 import { checkNotesStdin, whatToTest } from "../notes";
 import { type AscPlatform, platformInfo } from "../platform";
 import { ShipError, ui } from "../ui";
+import { describeDuration, waitFor } from "../wait";
 import { appSettings, packageSettings } from "../xcode";
 import { appId, friendly } from "./status";
 
@@ -100,6 +102,8 @@ export async function beta(options: BetaOptions) {
     });
     return;
   }
+  // Before archiving for minutes, not at the upload.
+  assertWritable(existing ? `distribute build ${build}` : `upload build ${build}`);
 
   let tag: Tagging | null = null;
   if (!existing) {
@@ -280,28 +284,45 @@ async function distribute(project: Project, id: string, number: string, options:
   return { build: (await findBuild(id, number, platform)) ?? build, groups: added, submittedForReview, publicLinks, notes };
 }
 
-/** Waits for App Store Connect to receive and process a build (usually 5 to 30 minutes). */
-async function waitForProcessing(id: string, number: string, platform: AscPlatform): Promise<Build> {
+/** How long ship waits for a build to process unless --timeout says otherwise. */
+export const PROCESSING_TIMEOUT_MS = 60 * 60_000;
+
+/**
+ * Waits for App Store Connect to receive and process a build (usually 5 to
+ * 30 minutes). `version` narrows it to that version's build, since two
+ * versions can share a build number. Times out with processing-timeout
+ * (exit 7); `later` is the command that picks up from there.
+ */
+export async function waitForProcessing(
+  id: string,
+  number: string,
+  platform: AscPlatform,
+  options: { timeoutMs?: number; later?: string; version?: string } = {},
+): Promise<Build> {
   ui.step(`Waiting for App Store Connect to process build ${number}`);
-  const deadline = Date.now() + 60 * 60 * 1000;
-  let last = "";
-  while (Date.now() < deadline) {
-    const build = await findBuild(id, number, platform);
-    const state = build?.processingState ?? "not received yet";
-    if (state !== last) {
-      ui.note(friendly(state) || state);
-      last = state;
-    }
-    if (build?.processingState === "VALID") {
-      ui.ok("Processed");
-      return build;
-    }
-    if (build && (build.processingState === "FAILED" || build.processingState === "INVALID")) {
-      throw new ShipError(`App Store Connect couldn't process build ${number}`, "processing-failed", "Check the email from App Store Connect for the reason.");
-    }
-    await Bun.sleep(20_000);
-  }
-  throw new ShipError(`Build ${number} is still processing after an hour`, "processing-timeout", `Finish later with: ship distribute ${number}`);
+  const timeoutMs = options.timeoutMs ?? PROCESSING_TIMEOUT_MS;
+  const build = await waitFor<Build>({
+    everyMs: 20_000,
+    timeoutMs,
+    progress: (state) => ui.note(friendly(state) || state),
+    check: async () => {
+      const [found] = await listBuilds(id, { number, version: options.version, platform, limit: 1 });
+      if (found?.processingState === "VALID") return { done: true, value: found };
+      if (found && (found.processingState === "FAILED" || found.processingState === "INVALID")) {
+        throw new ShipError(`App Store Connect couldn't process build ${number}`, "processing-failed", "Check the email from App Store Connect for the reason.");
+      }
+      return { done: false, state: found?.processingState ?? "not received yet" };
+    },
+    timedOut: (state) =>
+      new ShipError(
+        `Build ${number} is still processing after ${describeDuration(timeoutMs)}`,
+        "processing-timeout",
+        `Finish later with: ${options.later ?? `ship distribute ${number}`}`,
+        { build: number, processingState: state || null },
+      ),
+  });
+  ui.ok("Processed");
+  return build;
 }
 
 function printDistribution(project: Project, build: string, result: Distribution) {

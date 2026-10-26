@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertWritable } from "./asc/client";
 import { type Project, findConfigRoot } from "./config";
 import type { Credentials } from "./credentials";
 import { run, runOrThrow } from "./exec";
@@ -230,6 +231,7 @@ export function checkInfo(info: Record<string, unknown>, expected: { bundleId: s
 
 /** Uploads an .ipa (or a macOS .pkg) to App Store Connect with altool and the API key. */
 export async function upload(project: Project, build: string, ipa: string, creds: Credentials, key: { dir: string }) {
+  assertWritable(`upload build ${build}`);
   const paths = buildPaths(project, build);
   const result = await run(
     ["xcrun", "altool", "--upload-app", "-f", ipa, "-t", platformInfo(project.platform).altool, "--apiKey", creds.keyId, "--apiIssuer", creds.issuerId, "--output-format", "json"],

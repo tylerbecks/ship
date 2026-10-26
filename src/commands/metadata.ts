@@ -9,13 +9,14 @@ import { changesJSON, renderChanges } from "../diff";
 import { type Platform, parsePlatform } from "../platform";
 import { LOCALE_PATTERN } from "../store/files";
 import { type Skip, appInfoSummary, prepare, pullMetadata, pushMetadata, validateStore, versionSummary } from "../store/metadata";
+import { problemsSuite, writeJUnit } from "../junit";
 import { ShipError, ui } from "../ui";
 import { appId } from "./status";
 
 export const metadataHelp = `ship metadata pull [--version <x.y>] [--locale <code>] [--force]
 ship metadata diff [--version <x.y>] [--locale <code>] [--prune] [--exit-code]
 ship metadata push [--version <x.y>] [--locale <code>] [--dry-run] [--partial] [--prune]
-ship metadata validate
+ship metadata validate [--junit <path>]
 
 Keeps the App Store page in the repo: the name, subtitle, description,
 keywords, What's New, URLs, categories, age rating, and App Review details
@@ -46,7 +47,8 @@ keychain:ship/lift-demo-password (see \`ship secret --help\`).
   --dry-run         push: show the changes without making them
   --partial         push: apply what can change now, skip the rest
   --prune           push: delete languages that have no folder (diff shows it)
-  --exit-code       diff: exit 1 when there are changes (for CI)`;
+  --exit-code       diff: exit 1 when there are changes (for CI)
+  --junit <path>    validate: also write the problems as a JUnit report, for CI`;
 
 const ACTIONS = ["pull", "diff", "push", "validate"];
 
@@ -55,7 +57,7 @@ const ACTION_FLAGS: Record<string, string[]> = {
   pull: ["version", "locale", "platform", "force"],
   diff: ["version", "locale", "platform", "prune", "exit-code"],
   push: ["version", "locale", "platform", "dry-run", "partial", "prune"],
-  validate: [],
+  validate: ["junit"],
 };
 
 interface Options {
@@ -68,6 +70,7 @@ interface Options {
   partial: boolean;
   prune: boolean;
   exitCode: boolean;
+  junit?: string;
 }
 
 /** --locale values, checked: "en-US", not "en_US". */
@@ -188,9 +191,10 @@ async function push(project: Project, options: Options) {
 // MARK: validate
 
 /** Checks the store folder offline. Returns whether it's valid. */
-async function validate(project: Project): Promise<boolean> {
+async function validate(project: Project, junit?: string): Promise<boolean> {
   requireStore(project);
   const problems = await validateStore(project.storeDir);
+  if (junit) await writeJUnit(junit, problemsSuite("ship metadata validate", problems));
   const errors = problems.filter((item) => item.severity === "error");
   const valid = errors.length === 0;
   ui.result({ valid, problems }, () => {
@@ -223,7 +227,7 @@ export async function metadata(action: string | undefined, options: Options): Pr
   if (action === "pull") await pull(project, options);
   if (action === "push") await push(project, options);
   if (action === "diff") return { failed: (await diff(project, options)) && options.exitCode };
-  if (action === "validate") return { failed: !(await validate(project)) };
+  if (action === "validate") return { failed: !(await validate(project, options.junit)) };
   return { failed: false };
 }
 
@@ -239,6 +243,7 @@ function options(ctx: Context): Options {
     partial: boolFlag(ctx, "partial"),
     prune: boolFlag(ctx, "prune"),
     exitCode: boolFlag(ctx, "exit-code"),
+    junit: stringFlag(ctx, "junit"),
   };
 }
 
@@ -256,6 +261,7 @@ export const commands: Command[] = [
       prune: { type: "boolean" },
       partial: { type: "boolean" },
       "exit-code": { type: "boolean" },
+      junit: { type: "string" },
     },
     run: async (ctx) => {
       if (ACTIONS.includes(ctx.args[0] ?? "")) {
