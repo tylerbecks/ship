@@ -420,6 +420,25 @@ ship sandbox set a@sandbox.test --renewal 5m --territory GBR --interrupt
 
 `--role` takes Apple's roles in lowercase with dashes (`app-manager`, `customer-support`, …) and repeats; `--apps` takes an App Store Connect id, an app from `ship apps`, or the bundle id of any of the team's apps, and repeats; without it the invitation is for every app (`--all-apps` says so). The global `--app` doesn't limit an invitation, so passing it without `--apps` or `--all-apps` is an error. Changing the team needs an Admin key. A device is its UDID or its name. The API can't make a sandbox account: add them in App Store Connect → Users and Access → Sandbox. Every change takes `--dry-run`.
 
+## Signing: certificates and profiles
+
+Xcode's automatic signing makes and installs what a build needs, and `ship beta` uses it. These are for when you sign by hand, like on a fresh CI machine, or want to see what's there.
+
+```
+ship certificates                                  # the team's certificates: kind, serial, expiry, and whether this Mac can sign with it
+ship certificates create --type distribution --csr CertificateSigningRequest.certSigningRequest
+ship certificates revoke <serial>
+
+ship profiles                                      # this app's provisioning profiles, which Xcode manages, and which are installed
+ship profiles create --type app-store              # or development, ad-hoc, direct (a Mac app with Developer ID)
+ship profiles install                              # the app's valid profiles, where Xcode finds them
+ship profiles delete "Lift ad-hoc (ship)"
+```
+
+ship never handles a private key. "On this Mac" means the certificate's fingerprint is one of the Keychain's signing identities (`security find-identity`), so its key is there. `create` takes a signing request you make in Keychain Access (Certificate Assistant → Request a Certificate From a Certificate Authority, saved to disk), so the key stays in the Keychain; ship uploads the request and adds the certificate, which is public, to the login Keychain, where it pairs with the key. `--type` takes `distribution`, `development`, `developer-id`, or `mac-installer`. A certificate expiring within 30 days gets a warning. Revoking one can't be undone: nothing can be signed with it again, and profiles that hold it stop working.
+
+`ship profiles create` makes a profile for the app's bundle id and platform with every current certificate of the right kind and, for development and ad hoc, every enabled device, then installs it in Xcode's profiles folder (`~/Library/Developer/Xcode/UserData/Provisioning Profiles`). The profiles Xcode's automatic signing makes ("iOS Team Provisioning Profile: …") are listed as made by Xcode; Apple lists them under the bundle id but won't say which certificates and devices they hold, and `delete` leaves them to Xcode. Every change takes `--dry-run`.
+
 ## Anything else: `ship api`
 
 For what ship has no command for yet, `ship api` sends one request to the [App Store Connect API](https://developer.apple.com/documentation/appstoreconnectapi), signed with ship's key and retried like every other request, and prints Apple's JSON as it came back. `{app}` in the path is the app's App Store Connect id:
@@ -453,6 +472,6 @@ ship api DELETE /v1/betaTesters/<id>
 - `ship help --json` lists every command (its usage lines, flags, and help), the global flags, and the exit codes; `ship <command> --help --json` gives one.
 - `--junit <path>` writes the checks of `ship release submit`, `ship doctor`, and the five `validate`s as a JUnit report, for CI to show as test results: what would block a release fails, and warnings pass with the warning as output.
 - App Store Connect errors keep Apple's code (`api-409`), with `status` and Apple's `errors` array in the JSON. ship retries when Apple is busy (429, 5xx) and on network failures for requests that are safe to repeat.
-- `--dry-run` shows what `ship beta`, `ship builds expire`, the five `push`es, the two `import`s, `ship release`, `ship reviews reply`, `ship users`, `ship devices`, `ship sandbox`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
+- `--dry-run` shows what `ship beta`, `ship builds expire`, the five `push`es, the two `import`s, `ship release`, `ship reviews reply`, `ship users`, `ship devices`, `ship certificates`, `ship profiles`, `ship sandbox`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
 - `ship metadata diff`, `ship screenshots diff`, `ship testflight diff`, `ship purchases diff`, and `ship subscriptions diff` take `--exit-code` (exit 1 when there are changes), for a CI check that the store folder and App Store Connect agree.
 - A flag an action doesn't take is a usage error, never ignored.

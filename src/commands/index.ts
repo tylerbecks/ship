@@ -7,6 +7,7 @@ import { commands as apps } from "./apps";
 import { commands as archive } from "./archive";
 import { commands as auth } from "./auth";
 import { commands as beta } from "./beta";
+import { commands as certificates } from "./certificates";
 import { commands as builds } from "./builds";
 import { commands as devices } from "./devices";
 import { commands as doctor } from "./doctor";
@@ -15,6 +16,7 @@ import { commands as groups } from "./groups";
 import { commands as init } from "./init";
 import { commands as metadata } from "./metadata";
 import { commands as open } from "./open";
+import { commands as profiles } from "./profiles";
 import { commands as purchases } from "./purchases";
 import { commands as release } from "./release";
 import { commands as reviews } from "./reviews";
@@ -57,6 +59,8 @@ export const commands: Command[] = [
   // Anything else
   ...users,
   ...devices,
+  ...certificates,
+  ...profiles,
   ...sandbox,
   ...api,
 ];
