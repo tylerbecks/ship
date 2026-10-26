@@ -15,9 +15,13 @@ export const signingPaths = {
   loginKeychain: join(homedir(), "Library", "Keychains", "login.keychain-db"),
 };
 
-/** The SHA-1s of the code signing identities in the Keychain: certificates whose private key is here too. */
+/**
+ * The SHA-1s of the Keychain's valid identities: certificates whose private
+ * key is here too. No -p codesigning: that leaves out installer-signing
+ * identities (a Mac Installer Distribution certificate), which sign too.
+ */
 export async function signingIdentities(): Promise<Set<string>> {
-  const result = await security.run(["find-identity", "-v", "-p", "codesigning"]);
+  const result = await security.run(["find-identity", "-v"]);
   const ids = [...result.stdout.matchAll(/^\s*\d+\)\s+([0-9A-F]{40})\s/gm)].map((match) => match[1]!);
   return new Set(ids);
 }

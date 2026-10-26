@@ -169,6 +169,8 @@ describe("signing types", () => {
 
   test("this Mac's identities, and installing a profile where Xcode looks", async () => {
     expect([...(await signingIdentities())]).toEqual([SHA1]);
+    // Every valid identity, installer-signing ones too: no codesigning policy filter.
+    expect(securityCalls.at(-1)).toEqual(["find-identity", "-v"]);
     const path = await installProfile("12345678-1234-1234-1234-123456789ABC", Buffer.from("hello").toString("base64"));
     expect(path).toBe(join(signingPaths.profiles, "12345678-1234-1234-1234-123456789ABC.mobileprovision"));
     expect(readFileSync(path, "utf8")).toBe("hello");
