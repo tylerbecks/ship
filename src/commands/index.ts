@@ -22,6 +22,7 @@ import { commands as sandbox } from "./sandbox";
 import { commands as screenshots } from "./screenshots";
 import { commands as secret } from "./secret";
 import { commands as status } from "./status";
+import { commands as subscriptions } from "./subscriptions";
 import { commands as testers } from "./testers";
 import { commands as testflight } from "./testflight";
 import { commands as users } from "./users";
@@ -50,6 +51,7 @@ export const commands: Command[] = [
   ...metadata,
   ...screenshots,
   ...purchases,
+  ...subscriptions,
   ...release,
   ...reviews,
   // Anything else

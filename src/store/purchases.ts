@@ -42,7 +42,7 @@ import { type Change, diffRecord } from "../diff";
 import { ShipError, ui } from "../ui";
 import { type AvailabilityFile, availabilityJSON, inBatches, jsonSame, parseProductJSON, planPriceAndAvailability, priceAndAvailabilityProblems } from "./catalog";
 import { type Problem, chars } from "./check";
-import { ASC_LOCALES, isObject, localeDirs, readText, writeText } from "./files";
+import { ASC_LOCALES, localeDirs, readText, writeText } from "./files";
 
 export const PURCHASE_FILE = "purchase.json";
 export const NOTES_FILE = "review-notes.txt";
