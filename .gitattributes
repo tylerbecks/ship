@@ -1,0 +1,2 @@
+# Agents append papercuts from parallel branches; union keeps every line (bin/papercuts.ts counts a duplicated line once).
+.papercuts.jsonl merge=union
