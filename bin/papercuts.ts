@@ -144,16 +144,19 @@ const { values, positionals } = (() => {
 })();
 
 /** The flags each command reads. Any other one is an error, not silently dropped (`list --tag` doesn't filter). */
-const FLAGS: Record<string, (keyof typeof values)[]> = {
+const FLAGS: Partial<Record<string, (keyof typeof values)[]>> = {
   add: ["tag", "severity", "evidence"],
   again: [],
   resolve: ["note"],
   list: ["all"],
   show: [],
 };
-const ignored = (Object.keys(values) as (keyof typeof values)[]).find((flag) => values[flag] !== undefined && !FLAGS[command ?? ""]?.includes(flag));
-if (command && FLAGS[command] && ignored) {
-  const takes = FLAGS[command]!.length ? `it takes ${FLAGS[command]!.map((f) => `--${f}`).join(", ")}` : "it takes no flags";
+const allowed = FLAGS[command ?? ""];
+const ignored = (Object.keys(values) as (keyof typeof values)[]).find(
+  (flag) => values[flag] !== undefined && allowed && !allowed.includes(flag),
+);
+if (allowed && ignored) {
+  const takes = allowed.length ? `it takes ${allowed.map((f) => `--${f}`).join(", ")}` : "it takes no flags";
   fail(`--${ignored} isn't for \`bun papercuts ${command}\` (${takes}).`);
 }
 
