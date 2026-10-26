@@ -9,8 +9,11 @@ import { security } from "./keychain";
 import type { Platform } from "./platform";
 import { ShipError } from "./ui";
 
-/** Where Xcode (16 and later) looks for provisioning profiles. Tests point it at a temp folder. */
-export const signingPaths = { profiles: join(homedir(), "Library", "Developer", "Xcode", "UserData", "Provisioning Profiles") };
+/** Where Xcode (16 and later) looks for provisioning profiles, and the login Keychain. Tests point them at temp folders. */
+export const signingPaths = {
+  profiles: join(homedir(), "Library", "Developer", "Xcode", "UserData", "Provisioning Profiles"),
+  loginKeychain: join(homedir(), "Library", "Keychains", "login.keychain-db"),
+};
 
 /** The SHA-1s of the code signing identities in the Keychain: certificates whose private key is here too. */
 export async function signingIdentities(): Promise<Set<string>> {
@@ -19,12 +22,22 @@ export async function signingIdentities(): Promise<Set<string>> {
   return new Set(ids);
 }
 
-/** Adds a certificate (public: a .cer file) to the login Keychain, where it pairs with the private key its signing request came from. */
-export async function importCertificate(path: string): Promise<void> {
-  const result = await security.run(["import", path, "-t", "cert"]);
+/**
+ * Adds a certificate (public: a .cer file) to `keychain`, the login one
+ * unless said otherwise. It pairs with the private key its signing request
+ * came from only when the key is in that same keychain.
+ */
+export async function importCertificate(path: string, keychain = signingPaths.loginKeychain): Promise<void> {
+  const result = await security.run(["import", path, "-k", keychain, "-t", "cert"]);
   // An identical certificate already there isn't a failure.
   if (result.code !== 0 && !/already exists/i.test(result.stderr)) {
-    throw new ShipError(`Couldn't add the certificate to the Keychain: ${result.stderr.trim() || `security exited ${result.code}`}`, "keychain-failed", `Add it by hand: double-click ${path} (it's kept there).`, { file: path });
+    const locked = /interaction is not allowed|locked/i.test(result.stderr);
+    throw new ShipError(
+      `Couldn't add the certificate to ${keychain}: ${result.stderr.trim() || `security exited ${result.code}`}`,
+      "keychain-failed",
+      locked ? `The keychain is locked. Unlock it (security unlock-keychain ${keychain}), then double-click ${path}.` : `Add it by hand: double-click ${path}.`,
+      { file: path, keychain },
+    );
   }
 }
 
@@ -69,7 +82,22 @@ export function certificateTypesFor(platform: Platform, kind: ProfileKind): stri
 /** Whether a kind of profile lists devices (the ones it can install on). */
 export const needsDevices = (kind: ProfileKind) => kind === "development" || kind === "ad-hoc";
 
-/** What a certificate is for, as ship spells it, and Apple's type. */
+/** Whether a device (its Apple DeviceClass) can run a platform's builds: Apple TVs are IOS in the API too. */
+export function deviceFits(platform: Platform, deviceClass: string | null): boolean {
+  if (platform === "macos") return deviceClass === "MAC";
+  if (platform === "tvos") return deviceClass === "APPLE_TV";
+  return deviceClass !== "APPLE_TV" && deviceClass !== "MAC";
+}
+
+/** What a certificate is for, as ship spells it, and every Apple type in that family (the first is the one create makes). */
+export const CERTIFICATE_FAMILIES: Record<string, string[]> = {
+  distribution: ["DISTRIBUTION", "IOS_DISTRIBUTION", "MAC_APP_DISTRIBUTION"],
+  development: ["DEVELOPMENT", "IOS_DEVELOPMENT", "MAC_APP_DEVELOPMENT"],
+  "developer-id": ["DEVELOPER_ID_APPLICATION_G2", "DEVELOPER_ID_APPLICATION"],
+  "mac-installer": ["MAC_INSTALLER_DISTRIBUTION"],
+};
+
+/** What a certificate is for, as ship spells it, and the Apple type create makes. */
 export const CERTIFICATE_KINDS: Record<string, string> = {
   distribution: "DISTRIBUTION",
   development: "DEVELOPMENT",

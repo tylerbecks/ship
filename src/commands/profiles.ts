@@ -6,33 +6,35 @@ import { listDevices } from "../asc/devices";
 import { type Profile, bundleIdProfiles, createProfile, deleteProfile, findBundleId, listCertificates } from "../asc/signing";
 import { type Command, type Context, boolFlag, checkActionFlags, stringFlag } from "../command";
 import { type Project, loadProject } from "../config";
-import { PROFILE_KINDS, type ProfileKind, certificateTypesFor, installProfile, installedProfiles, needsDevices, profileType, signingPaths } from "../signing";
+import { PROFILE_KINDS, type ProfileKind, certificateTypesFor, deviceFits, installProfile, installedProfiles, needsDevices, profileType, signingIdentities, signingPaths } from "../signing";
 import { ShipError, table, ui } from "../ui";
 
 export const profilesHelp = `ship profiles [list]
-ship profiles create [--type <kind>] [--name <name>] [--dry-run]
+ship profiles create [--type <kind>] [--name <name>] [--certificate <serial>] [--dry-run]
 ship profiles install [<name>]
 ship profiles delete <name> [--dry-run]
 
 The provisioning profiles for this app's bundle id: what each is for,
 whether it's still valid, and whether Xcode has it.
 
-create makes one with every current certificate of the right kind (and,
-for development and ad hoc, every enabled device of the app's platform),
-then installs it. install puts the app's valid profiles (or the one named)
+create makes one and installs it. A development profile holds every
+current development certificate; the others hold one certificate, this
+Mac's when it has one (or --certificate's). Development and ad hoc ones
+hold every enabled device that runs the app's platform. install puts the app's valid profiles (or the one named)
 where Xcode finds them. Xcode's automatic signing makes and installs
 profiles itself; these are for manual signing, like a CI machine.
 
   --type <kind>   create: app-store (the default), development, ad-hoc, or
                   direct (a Mac app signed with Developer ID)
   --name <name>   create: what to call it (default: the app and the kind)
+  --certificate <serial>  create: the certificate a distribution profile holds
   --dry-run       create, delete: show what would happen`;
 
 const ACTIONS = ["list", "create", "install", "delete"];
 
 const ACTION_FLAGS: Record<string, string[]> = {
   list: [],
-  create: ["type", "name", "dry-run"],
+  create: ["type", "name", "certificate", "dry-run"],
   install: [],
   delete: ["dry-run"],
 };
@@ -82,21 +84,34 @@ async function profiles(ctx: Context) {
     const rows = found.map((p) => ({ ...p, installed: installed.has(p.uuid) }));
     return ui.result({ bundleId: bundle.identifier, profiles: rows }, () => {
       if (!rows.length) return console.log(`${bundle.identifier} has no profiles yet: ship profiles create`);
-      const count = (n: number | null) => (n === null ? "–" : String(n));
-      console.log(table([["NAME", "KIND", "STATE", "EXPIRES", "CERTS", "DEVICES", "INSTALLED", "MADE BY"], ...rows.map((p) => [p.name, kindOf(p.type), p.state.toLowerCase(), p.expirationDate?.slice(0, 10) ?? "", count(p.certificates), count(p.devices), p.installed ? "yes" : "no", p.xcodeManaged ? "Xcode" : ""])]));
+      console.log(table([["NAME", "KIND", "STATE", "EXPIRES", "INSTALLED", "MADE BY"], ...rows.map((p) => [p.name, kindOf(p.type), p.state.toLowerCase(), p.expirationDate?.slice(0, 10) ?? "", p.installed ? "yes" : "no", p.xcodeManaged ? "Xcode" : ""])]));
     });
   }
 
   if (action === "create") {
     const type = profileType(project.platform, kind!);
+    const name = stringFlag(ctx, "name")?.trim() || `${project.config.name} ${kind} (ship)`;
+    // Apple refuses a second profile with a name: say so before asking it.
+    if ((await bundleIdProfiles(bundle.id)).some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+      throw new ShipError(`${bundle.identifier} already has a profile called "${name}"`, "profile-exists", `Pass another --name, or delete it first: ship profiles delete "${name}"`, { name });
+    }
     const now = new Date().toISOString();
-    const certificates = (await listCertificates(certificateTypesFor(project.platform, kind!))).filter((c) => !c.expirationDate || c.expirationDate > now);
-    if (!certificates.length) {
+    const current = (await listCertificates(certificateTypesFor(project.platform, kind!))).filter((c) => !c.expirationDate || c.expirationDate > now);
+    const wanted = stringFlag(ctx, "certificate");
+    if (wanted && kind === "development") throw usage("A development profile holds every development certificate", "Drop --certificate, or pick a distribution kind: --type app-store.");
+    if (!current.length) {
       throw new ShipError(`The team has no current certificate a ${kind} profile can hold`, "no-certificate", `Make one: ship certificates create --type ${kind === "development" ? "development" : kind === "direct" ? "developer-id" : "distribution"} --csr <file>`);
     }
-    const devices = needsDevices(kind!) ? (await listDevices({ platform: project.platform === "macos" ? "MAC_OS" : "IOS" })).filter((d) => d.status === "ENABLED") : [];
+    let certificates = current;
+    if (kind !== "development") {
+      // A distribution profile holds one certificate: the named one, else one this Mac can sign with, else the newest.
+      const identities = await signingIdentities();
+      const named = wanted ? current.find((c) => c.serialNumber.toLowerCase() === wanted.trim().toLowerCase()) : undefined;
+      if (wanted && !named) throw new ShipError(`No current ${kind} certificate has serial ${wanted}`, "no-certificate", "`ship certificates` lists them.", { choices: current.map((c) => c.serialNumber) });
+      certificates = [named ?? current.find((c) => c.sha1 && identities.has(c.sha1)) ?? current[0]!];
+    }
+    const devices = needsDevices(kind!) ? (await listDevices({ platform: project.platform === "macos" ? "MAC_OS" : "IOS" })).filter((d) => d.status === "ENABLED" && deviceFits(project.platform, d.deviceClass)) : [];
     if (needsDevices(kind!) && !devices.length) throw new ShipError(`A ${kind} profile needs a device, and none is registered`, "no-device", "Register one: ship devices add <udid> --name <name>");
-    const name = stringFlag(ctx, "name")?.trim() || `${project.config.name} ${kind} (ship)`;
     const plan = { name, type, bundleId: bundle.identifier, certificates: certificates.map((c) => c.name), devices: devices.length };
     if (dryRun) return ui.result({ dryRun, profile: plan }, () => console.log(`Would make "${name}" (${type}) with ${certificates.length} certificate${certificates.length === 1 ? "" : "s"}${devices.length ? ` and ${devices.length} device${devices.length === 1 ? "" : "s"}` : ""}, and install it.`));
     ui.step(`Making ${name}`);
@@ -110,6 +125,7 @@ async function profiles(ctx: Context) {
   if (action === "install") {
     const all = await bundleIdProfiles(bundle.id, { withContent: true });
     const wanted = given.length ? [findProfile(all, given[0]!)] : all.filter((p) => p.state === "ACTIVE");
+    if (given.length && !wanted[0]!.content) throw new ShipError(`App Store Connect didn't send ${wanted[0]!.name}'s profile file`, "no-profile", "Download it in the developer account, then double-click it.", { profile: wanted[0]!.name });
     if (!wanted.length) throw new ShipError(`${bundle.identifier} has no valid profiles to install`, "no-profile", "Make one: ship profiles create");
     const installed: { name: string; path: string }[] = [];
     for (const profile of wanted) {
@@ -142,7 +158,7 @@ export const commands: Command[] = [
     name: "profiles",
     index: [{ section: "other", label: "profiles", summary: "Provisioning profiles: make, install, delete" }],
     help: profilesHelp,
-    flags: { type: { type: "string" }, name: { type: "string" }, "dry-run": { type: "boolean" } },
+    flags: { type: { type: "string" }, name: { type: "string" }, certificate: { type: "string" }, "dry-run": { type: "boolean" } },
     run: profiles,
   },
 ];

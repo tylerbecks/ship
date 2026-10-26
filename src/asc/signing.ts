@@ -97,9 +97,6 @@ export interface Profile {
   uuid: string;
   expirationDate: string | null;
   bundleId: string | null;
-  /** How many certificates and devices it holds, when Apple says (it doesn't for profiles Xcode manages). */
-  certificates: number | null;
-  devices: number | null;
   /** Made and kept up to date by Xcode's automatic signing ("iOS Team Provisioning Profile: …", "XC …"). */
   xcodeManaged: boolean;
   /** The .mobileprovision file (base64), when asked for. */
@@ -120,10 +117,6 @@ export const isXcodeManaged = (name: string) => /^(iOS|tvOS|Mac|Mac Catalyst|vis
 
 function toProfile(resource: Resource<ProfileAttributes>, withContent: boolean): Profile {
   const { id, attributes } = resource;
-  const count = (name: string) => {
-    const data = resource.relationships?.[name]?.data;
-    return Array.isArray(data) ? data.length : null;
-  };
   const name = attributes.name ?? "";
   return {
     id,
@@ -133,8 +126,6 @@ function toProfile(resource: Resource<ProfileAttributes>, withContent: boolean):
     uuid: attributes.uuid ?? "",
     expirationDate: attributes.expirationDate ?? null,
     bundleId: relationshipId(resource, "bundleId") ?? null,
-    certificates: count("certificates"),
-    devices: count("devices"),
     xcodeManaged: isXcodeManaged(name),
     ...(withContent && attributes.profileContent ? { content: attributes.profileContent } : {}),
   };
@@ -147,7 +138,7 @@ function toProfile(resource: Resource<ProfileAttributes>, withContent: boolean):
  * doesn't exist), so nothing more is asked per profile.
  */
 export async function bundleIdProfiles(bundleId: string, options: { withContent?: boolean } = {}): Promise<Profile[]> {
-  const fields = `name,profileType,profileState,uuid,expirationDate,bundleId,certificates,devices${options.withContent ? ",profileContent" : ""}`;
+  const fields = `name,profileType,profileState,uuid,expirationDate${options.withContent ? ",profileContent" : ""}`;
   const { data } = await all<ProfileAttributes>(`/v1/bundleIds/${encodeURIComponent(bundleId)}/profiles?fields[profiles]=${fields}&limit=200`);
   return data.map((p) => toProfile({ ...p, relationships: { ...p.relationships, bundleId: { data: { type: "bundleIds", id: bundleId } } } }, Boolean(options.withContent))).sort((a, b) => a.name.localeCompare(b.name));
 }

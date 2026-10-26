@@ -7,12 +7,12 @@ import { policy } from "../src/asc/client";
 import { certificateSha1, isXcodeManaged, profileCreateBody } from "../src/asc/signing";
 import { type Context, findCommand, parseFlags } from "../src/command";
 import { commands } from "../src/commands";
-import { daysUntil, parseCertificateKind } from "../src/commands/certificates";
+import { daysUntil, parseCertificateKind, signingRequest } from "../src/commands/certificates";
 import { parseProfileKind } from "../src/commands/profiles";
 import { appsPath } from "../src/config";
 import { useCredentials } from "../src/credentials";
 import { security } from "../src/keychain";
-import { certificateTypesFor, installProfile, installedProfiles, profileType, signingIdentities, signingPaths } from "../src/signing";
+import { certificateTypesFor, deviceFits, installProfile, installedProfiles, profileType, signingIdentities, signingPaths } from "../src/signing";
 import { ShipError, ui } from "../src/ui";
 import { type AscCall, captureLog, jsonApi, mockAsc, noRetryDelay, resource, temp, testCredentials } from "./helpers";
 
@@ -53,7 +53,9 @@ const writes = (calls: AscCall[]) => calls.filter((call) => call.method !== "GET
 let mock: ReturnType<typeof mockAsc> | undefined;
 let delay: ReturnType<typeof noRetryDelay>;
 const realSecurity = { ...security };
-const realProfiles = signingPaths.profiles;
+const realPaths = { ...signingPaths };
+/** What `security import` answers: 0, or a failure. */
+let importResult: { code: number; stderr: string };
 /** What `security` was asked to do. */
 let securityCalls: string[][];
 
@@ -62,12 +64,14 @@ beforeEach(async () => {
   delay = noRetryDelay();
   ui.quiet = true;
   signingPaths.profiles = join(temp(), "Provisioning Profiles");
+  signingPaths.loginKeychain = "/tmp/test-login.keychain-db";
   securityCalls = [];
+  importResult = { code: 0, stderr: "" };
   // The Keychain holds the private key for DER's certificate only.
   security.run = async (args) => {
     securityCalls.push(args);
     if (args[0] === "find-identity") return { code: 0, stdout: `  1) ${SHA1} "Apple Distribution: Ada (TEAM)"\n     1 valid identities found\n`, stderr: "" };
-    if (args[0] === "import") return { code: 0, stdout: "1 certificate imported.\n", stderr: "" };
+    if (args[0] === "import") return { ...importResult, stdout: importResult.code ? "" : "1 certificate imported.\n" };
     throw new Error(`unexpected security ${args[0]}`);
   };
 });
@@ -78,7 +82,7 @@ afterEach(() => {
   delay.restore();
   useCredentials(undefined);
   Object.assign(security, realSecurity);
-  signingPaths.profiles = realProfiles;
+  Object.assign(signingPaths, realPaths);
   policy.readOnly = false;
   ui.json = false;
   ui.quiet = false;
@@ -100,7 +104,17 @@ function asc(options: { certificates?: ReturnType<typeof certificate>[]; profile
     }
     if (method === "GET" && path === "/v1/bundleIds") return { json: jsonApi(options.bundle === false ? [] : [resource("bundleIds", "B1", { identifier: "com.example.lift", name: "Lift", platform: "UNIVERSAL" }), resource("bundleIds", "B2", { identifier: "com.example.lift.widgets" })]) };
     if (method === "GET" && path === "/v1/bundleIds/B1/profiles") return { json: jsonApi(options.profiles ?? []) };
-    if (method === "GET" && path === "/v1/devices") return { json: jsonApi([resource("devices", "d1", { name: "iPhone", udid: "a".repeat(40), platform: "IOS", status: "ENABLED" }), resource("devices", "d2", { name: "Old", udid: "b".repeat(40), platform: "IOS", status: "DISABLED" })]) };
+    if (method === "GET" && path === "/v1/devices") {
+      const all = [
+        resource("devices", "d1", { name: "iPhone", udid: "a".repeat(40), platform: "IOS", deviceClass: "IPHONE", status: "ENABLED" }),
+        resource("devices", "d2", { name: "Old", udid: "b".repeat(40), platform: "IOS", deviceClass: "IPHONE", status: "DISABLED" }),
+        resource("devices", "d3", { name: "TV", udid: "c".repeat(40), platform: "IOS", deviceClass: "APPLE_TV", status: "ENABLED" }),
+        resource("devices", "d4", { name: "Vision", udid: "d".repeat(40), platform: "IOS", deviceClass: "APPLE_VISION_PRO", status: "ENABLED" }),
+        resource("devices", "d5", { name: "Mac", udid: "e".repeat(40), platform: "MAC_OS", deviceClass: "MAC", status: "ENABLED" }),
+      ];
+      const platform = call.query["filter[platform]"];
+      return { json: jsonApi(all.filter((d) => !platform || d.attributes.platform === platform)) };
+    }
     if (method === "POST" && path === "/v1/certificates") return { status: 201, json: jsonApi(certificate("new", (call.body as any).data.attributes.certificateType, OTHER)) };
     if (method === "POST" && path === "/v1/profiles") {
       const { name, profileType: type } = (call.body as any).data.attributes;
@@ -127,6 +141,23 @@ describe("signing types", () => {
     expect(parseProfileKind(undefined)).toBe("app-store");
     expect((await rejected(() => parseProfileKind("store"))).code).toBe("usage");
     expect(daysUntil("2026-01-11T00:00:00Z", Date.parse("2026-01-01T00:00:00Z"))).toBe(10);
+  });
+
+  test("a signing request alone: never a private key", async () => {
+    const request = "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----";
+    expect(signingRequest(`junk\n${request}\ntrailing`, "r.csr")).toBe(request);
+    expect(signingRequest("-----BEGIN NEW CERTIFICATE REQUEST-----\nMIIB\n-----END NEW CERTIFICATE REQUEST-----", "r.csr")).toContain("NEW CERTIFICATE REQUEST");
+    const combined = `-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n${request}`;
+    expect((await rejected(() => signingRequest(combined, "both.pem"))).message).toBe("both.pem has a private key in it, and a private key never leaves this Mac");
+    expect((await rejected(() => signingRequest("-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----", "k"))).code).toBe("usage");
+    expect((await rejected(() => signingRequest("hello", "x"))).message).toBe("x isn't a signing request");
+  });
+
+  test("which devices run which platform", () => {
+    expect(["IPHONE", "IPAD", "APPLE_VISION_PRO", "APPLE_TV", "MAC"].filter((c) => deviceFits("ios", c))).toEqual(["IPHONE", "IPAD", "APPLE_VISION_PRO"]);
+    expect(deviceFits("tvos", "APPLE_TV")).toBe(true);
+    expect(deviceFits("tvos", "IPHONE")).toBe(false);
+    expect(deviceFits("macos", "MAC")).toBe(true);
   });
 
   test("which profiles Xcode manages", () => {
@@ -166,7 +197,7 @@ describe("ship certificates", () => {
     ]);
     expect(result.certificates[0]).not.toHaveProperty("content");
     await ship(["certificates", "--type", "distribution"]);
-    expect(mock.calls.at(-1)!.query["filter[certificateType]"]).toBe("DISTRIBUTION");
+    expect(mock.calls.at(-1)!.query["filter[certificateType]"]).toBe("DISTRIBUTION,IOS_DISTRIBUTION,MAC_APP_DISTRIBUTION");
   });
 
   test("create sends the signing request, never a key, and adds the certificate to the Keychain", async () => {
@@ -177,8 +208,13 @@ describe("ship certificates", () => {
     const key = join(dir, "key.pem");
     writeFileSync(key, "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n");
     mock = mockAsc(asc());
-    expect((await rejected(() => ship(["certificates", "create", "--type", "distribution", "--csr", key]))).message).toContain("isn't a signing request");
+    expect((await rejected(() => ship(["certificates", "create", "--type", "distribution", "--csr", key]))).message).toContain("has a private key in it");
     expect((await ship(["certificates", "create", "--type", "distribution", "--csr", csr, "--dry-run"])).dryRun).toBe(true);
+    expect(writes(mock.calls)).toEqual([]);
+
+    const both = join(dir, "both.pem");
+    writeFileSync(both, `${readFileSync(key, "utf8")}${readFileSync(csr, "utf8")}`);
+    expect((await rejected(() => ship(["certificates", "create", "--type", "distribution", "--csr", both]))).message).toContain("has a private key in it");
     expect(writes(mock.calls)).toEqual([]);
 
     const made = await ship(["certificates", "create", "--type", "distribution", "--csr", csr]);
@@ -186,8 +222,27 @@ describe("ship certificates", () => {
     // The new certificate's key isn't on this (fake) Mac, so it says so.
     expect(made.certificate).toMatchObject({ id: "new", onThisMac: false });
     const imported = securityCalls.find((args) => args[0] === "import")!;
-    expect(imported.slice(2)).toEqual(["-t", "cert"]);
-    expect(existsSync(imported[1]!)).toBe(false);
+    expect(imported.slice(2)).toEqual(["-k", "/tmp/test-login.keychain-db", "-t", "cert"]);
+    // The certificate (public) is kept next to the request.
+    expect(imported[1]).toBe(join(dir, "SERnew.cer"));
+    expect(made.file).toBe(join(dir, "SERnew.cer"));
+    expect(existsSync(made.file)).toBe(true);
+    await ship(["certificates", "create", "--type", "distribution", "--csr", csr, "--keychain", "/tmp/ci.keychain-db"]);
+    expect(securityCalls.filter((args) => args[0] === "import").at(-1)!.slice(2, 4)).toEqual(["-k", "/tmp/ci.keychain-db"]);
+  });
+
+  test("when the Keychain won't take it, the error names the certificate Apple made and where its file is", async () => {
+    setup();
+    const dir = temp();
+    const csr = join(dir, "request.certSigningRequest");
+    writeFileSync(csr, "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----\n");
+    mock = mockAsc(asc());
+    importResult = { code: 1, stderr: "User interaction is not allowed." };
+    const error = await rejected(() => ship(["certificates", "create", "--type", "distribution", "--csr", csr]));
+    expect(error).toMatchObject({ code: "keychain-failed", details: { certificate: { id: "new", serialNumber: "SERnew" }, file: join(dir, "SERnew.cer") } });
+    expect(error.message).toStartWith("Made DISTRIBUTION new, but couldn't add the certificate");
+    expect(error.hint).toContain("security unlock-keychain");
+    expect(existsSync(join(dir, "SERnew.cer"))).toBe(true);
   });
 
   test("revoke by serial, and an unknown one", async () => {
@@ -216,10 +271,13 @@ describe("ship profiles", () => {
     expect(mock.calls.some((c) => c.path === "/v1/bundleIds/B2/profiles")).toBe(false);
   });
 
-  test("create picks current certificates of the right kind, devices when it needs them, and installs it", async () => {
+  test("create: one distribution certificate, this Mac's; every development one; devices that run the platform; then installs it", async () => {
     setup();
     const expired = "2020-01-01T00:00:00Z";
-    mock = mockAsc(asc({ certificates: [certificate("1", "DISTRIBUTION", DER), certificate("2", "DISTRIBUTION", OTHER, expired), certificate("3", "DEVELOPMENT", OTHER)] }));
+    mock = mockAsc(asc({ certificates: [certificate("0", "DISTRIBUTION", OTHER, "2031-01-01T00:00:00Z"), certificate("1", "DISTRIBUTION", DER), certificate("2", "DISTRIBUTION", OTHER, expired), certificate("3", "DEVELOPMENT", OTHER), certificate("4", "DEVELOPMENT", DER)] }));
+    const dry = await ship(["profiles", "create", "--dry-run"]);
+    expect(dry).toMatchObject({ dryRun: true, profile: { name: "Lift app-store (ship)", type: "IOS_APP_STORE", certificates: ["DISTRIBUTION 1"] } });
+    expect(writes(mock.calls)).toEqual([]);
     const made = await ship(["profiles", "create"]);
     expect(mock.calls.find((c) => c.path === "/v1/profiles")!.body).toEqual({
       data: { type: "profiles", attributes: { name: "Lift app-store (ship)", profileType: "IOS_APP_STORE" }, relationships: { bundleId: { data: { type: "bundleIds", id: "B1" } }, certificates: { data: [{ type: "certificates", id: "1" }] } } },
@@ -230,8 +288,25 @@ describe("ship profiles", () => {
     await ship(["profiles", "create", "--type", "development", "--name", "Dev"]);
     const dev = mock.calls.filter((c) => c.path === "/v1/profiles").at(-1)!.body as any;
     expect(dev.data.attributes).toEqual({ name: "Dev", profileType: "IOS_APP_DEVELOPMENT" });
-    expect(dev.data.relationships.certificates.data).toEqual([{ type: "certificates", id: "3" }]);
-    expect(dev.data.relationships.devices.data).toEqual([{ type: "devices", id: "d1" }]);
+    expect(dev.data.relationships.certificates.data.map((c: { id: string }) => c.id).sort()).toEqual(["3", "4"]);
+    // The enabled iPhone and Vision Pro; not the Apple TV or the Mac.
+    expect(dev.data.relationships.devices.data.map((d: { id: string }) => d.id)).toEqual(["d1", "d4"]);
+    expect(mock.calls.filter((c) => c.path === "/v1/devices").at(-1)!.query["filter[platform]"]).toBe("IOS");
+
+    await ship(["profiles", "create", "--name", "Picked", "--certificate", "SER0"]);
+    expect((mock.calls.filter((c) => c.path === "/v1/profiles").at(-1)!.body as any).data.relationships.certificates.data).toEqual([{ type: "certificates", id: "0" }]);
+    expect((await rejected(() => ship(["profiles", "create", "--name", "X", "--certificate", "NOPE"]))).code).toBe("no-certificate");
+    expect((await rejected(() => ship(["profiles", "create", "--type", "development", "--name", "Y", "--certificate", "SER3"]))).code).toBe("usage");
+  });
+
+  test("create for tvOS holds Apple TVs only, and a name that's taken is refused before Apple sees it", async () => {
+    setup("tvos");
+    mock = mockAsc(asc({ certificates: [certificate("3", "DEVELOPMENT", OTHER)], profiles: [profile("1", "Lift development (ship)", "TVOS_APP_DEVELOPMENT")] }));
+    expect(await rejected(() => ship(["profiles", "create", "--type", "development"]))).toMatchObject({ code: "profile-exists", exitCode: 5 });
+    await ship(["profiles", "create", "--type", "development", "--name", "TV"]);
+    const body = mock.calls.find((c) => c.path === "/v1/profiles")!.body as any;
+    expect(body.data.attributes.profileType).toBe("TVOS_APP_DEVELOPMENT");
+    expect(body.data.relationships.devices.data).toEqual([{ type: "devices", id: "d3" }]);
   });
 
   test("create needs a certificate; profiles need the bundle id registered", async () => {
@@ -251,6 +326,8 @@ describe("ship profiles", () => {
     expect(installed.installed.map((p: any) => p.name)).toEqual(["iOS Team Store Provisioning Profile: com.example.lift", "Lift ad-hoc (ship)"]);
     expect((await ship(["profiles", "install", "broken"])).installed.map((p: any) => p.name)).toEqual(["Broken"]);
     expect(await rejected(() => ship(["profiles", "delete", "iOS Team Store Provisioning Profile: com.example.lift"]))).toMatchObject({ code: "xcode-managed", exitCode: 5 });
+    expect((await ship(["profiles", "delete", "Lift ad-hoc (ship)", "--dry-run"])).dryRun).toBe(true);
+    expect(writes(mock.calls)).toEqual([]);
     await ship(["profiles", "delete", "Lift ad-hoc (ship)"]);
     expect(writes(mock.calls)).toEqual(["DELETE /v1/profiles/2"]);
     expect(await rejected(() => ship(["profiles", "delete", "nope"]))).toMatchObject({ code: "no-profile", exitCode: 4 });
