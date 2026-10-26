@@ -38,10 +38,11 @@ import {
   updatePurchaseLocalization,
 } from "../asc/purchases";
 import type { Project } from "../config";
-import { type Change, diffRecord, same } from "../diff";
+import { type Change, diffRecord } from "../diff";
 import { ShipError, ui } from "../ui";
+import { type AvailabilityFile, availabilityJSON, inBatches, jsonSame, parseProductJSON, planPriceAndAvailability, priceAndAvailabilityProblems } from "./catalog";
 import { type Problem, chars } from "./check";
-import { ASC_LOCALES, isObject, localeDirs, readText, writeText } from "./files";
+import { ASC_LOCALES, localeDirs, readText, writeText } from "./files";
 
 export const PURCHASE_FILE = "purchase.json";
 export const NOTES_FILE = "review-notes.txt";
@@ -64,8 +65,7 @@ export interface PurchaseFile {
   familySharing?: boolean;
   /** One territory's price; Apple sets the others to match. null clears nothing (a sold purchase needs a price). */
   price?: Price;
-  /** "all" territories, or a list; newTerritories: whether ones Apple adds get it. */
-  availability?: { territories: "all" | string[]; newTerritories?: boolean };
+  availability?: AvailabilityFile;
 }
 
 /** One purchase folder. */
@@ -80,17 +80,6 @@ export interface LocalPurchase {
 
 // MARK: Reading the files
 
-function parsePurchaseJSON(text: string, path: string): Record<string, unknown> {
-  let json: unknown;
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch (error) {
-    throw new ShipError(`${path} isn't valid JSON: ${error instanceof Error ? error.message : String(error)}`, "bad-store-file", `Fix ${path} (a missing comma or quote?), or delete it and run \`ship purchases pull\`.`, { file: path });
-  }
-  if (!isObject(json)) throw new ShipError(`${path} should hold a JSON object`, "bad-store-file", "Start it with { and end it with }.", { file: path });
-  return json;
-}
-
 /** Every purchase folder under `dir`, by product id. */
 export async function readPurchases(dir: string): Promise<LocalPurchase[]> {
   if (!existsSync(dir)) return [];
@@ -98,7 +87,7 @@ export async function readPurchases(dir: string): Promise<LocalPurchase[]> {
   for (const entry of readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith(".")).sort((a, b) => a.name.localeCompare(b.name))) {
     const folder = join(dir, entry.name);
     const text = await readText(join(folder, PURCHASE_FILE));
-    const json = text === undefined ? {} : parsePurchaseJSON(text, join(folder, PURCHASE_FILE));
+    const json = text === undefined ? {} : parseProductJSON(text, join(folder, PURCHASE_FILE), "purchases");
     const locales: LocalPurchase["locales"] = {};
     for (const locale of localeDirs(folder)) {
       const fields: { name?: string; description?: string } = {};
@@ -138,27 +127,7 @@ export function validatePurchases(purchases: LocalPurchase[]): Problem[] {
     else if (file.referenceName && chars(file.referenceName) > PURCHASE_LIMITS.referenceName) error(json, `referenceName is ${chars(file.referenceName)} characters; the most is ${PURCHASE_LIMITS.referenceName}`, "referenceName");
     if (file.familySharing !== undefined && typeof file.familySharing !== "boolean") error(json, "familySharing should be true or false", "familySharing");
     else if (file.familySharing === true && file.type && file.type !== "NON_CONSUMABLE") error(json, `Family Sharing is only for non-consumable purchases (and subscriptions), not ${file.type}`, "familySharing");
-    if (file.price !== undefined) {
-      const price = file.price as unknown;
-      if (!isObject(price) || typeof price.territory !== "string" || typeof price.amount !== "string") {
-        error(json, 'price should be like { "territory": "USA", "amount": "0.99" } (the amount as text, so 0.90 stays 0.90)', "price");
-      } else {
-        if (!/^[A-Z]{3}$/.test(price.territory)) error(json, `price.territory is a three-letter territory like USA, not "${price.territory}"`, "price.territory");
-        if (!/^\d+(\.\d{1,3})?$/.test(price.amount) || Number(price.amount) <= 0) error(json, `price.amount is what customers pay, like "0.99", not "${price.amount}"`, "price.amount");
-      }
-    }
-    if (file.availability !== undefined) {
-      const availability = file.availability as unknown;
-      const territories = isObject(availability) ? availability.territories : undefined;
-      // [] is sold nowhere: it's what App Store Connect has for a purchase taken off sale everywhere.
-      if (!isObject(availability) || !(territories === "all" || (Array.isArray(territories) && territories.every((t) => typeof t === "string" && /^[A-Z]{3}$/.test(t))))) {
-        error(json, 'availability should be like { "territories": "all" } or { "territories": ["USA", "GBR"], "newTerritories": false }', "availability");
-      } else if (Array.isArray(territories) && new Set(territories).size !== territories.length) {
-        error(json, "availability.territories lists a territory twice", "availability.territories");
-      } else if (availability.newTerritories !== undefined && typeof availability.newTerritories !== "boolean") {
-        error(json, "availability.newTerritories should be true or false", "availability.newTerritories");
-      }
-    }
+    problems.push(...priceAndAvailabilityProblems(json, file.price, file.availability));
     for (const key of purchase.unknownKeys) warning(json, `${key} isn't an in-app purchase field; ship ignores it`, key);
     if (purchase.notes && chars(purchase.notes) > PURCHASE_LIMITS.reviewNote) warning(`${base}/${NOTES_FILE}`, `The notes are ${chars(purchase.notes)} characters; App Review takes up to ${PURCHASE_LIMITS.reviewNote}`);
     for (const [locale, fields] of Object.entries(purchase.locales)) {
@@ -183,13 +152,6 @@ export interface RemotePurchase {
   availability: Availability | null;
 }
 
-/** Runs `body` on each item, a few at a time, so a big catalog doesn't send hundreds of requests at once. */
-async function inBatches<T, R>(items: T[], size: number, body: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = [];
-  for (let i = 0; i < items.length; i += size) results.push(...(await Promise.all(items.slice(i, i + size).map(body))));
-  return results;
-}
-
 /** Every purchase with its localizations, price, and availability; `only` limits it to these product ids. */
 export async function fetchPurchases(appId: string, only?: string[]): Promise<{ purchases: RemotePurchase[]; territories: string[] }> {
   const [list, territories] = await Promise.all([listPurchases(appId), allTerritories()]);
@@ -199,12 +161,6 @@ export async function fetchPurchases(appId: string, only?: string[]): Promise<{ 
     return { purchase, localizations, price, otherPrices: others, availability };
   });
   return { purchases, territories };
-}
-
-/** The availability as purchase.json says it: "all" when it's every territory. */
-export function availabilityJSON(availability: Availability, territories: string[]): PurchaseFile["availability"] {
-  const all = territories.length > 0 && territories.every((t) => availability.territories.includes(t));
-  return { territories: all ? "all" : availability.territories, newTerritories: availability.newTerritories };
 }
 
 /** The files for what App Store Connect has, by path in the purchases folder. */
@@ -254,12 +210,6 @@ export interface PurchasesPlan {
   /** Locales a purchase has in App Store Connect but no folder for, left alone without --prune. */
   onlyRemoteLocales: string[];
 }
-
-const desiredAvailability = (file: PurchaseFile, territories: string[], remote: Availability | null): Availability | undefined => {
-  if (!file.availability) return undefined;
-  const list = file.availability.territories === "all" ? territories : [...file.availability.territories].sort();
-  return { territories: list, newTerritories: file.availability.newTerritories ?? remote?.newTerritories ?? file.availability.territories === "all" };
-};
 
 /** What would change, from the folders (`local`) to App Store Connect (`remote`). Pure: it asks nothing. */
 export function planPurchases(local: LocalPurchase[], remote: RemotePurchase[], territories: string[], options: { prune?: boolean } = {}): PurchasesPlan {
@@ -330,29 +280,10 @@ export function planPurchases(local: LocalPurchase[], remote: RemotePurchase[], 
     }
 
     // Price and availability.
-    if (file.price && !(existing?.price && existing.price.territory === file.price.territory && sameAmount(existing.price.amount, file.price.amount))) {
-      item.price = file.price;
-      const show = (price: Price) => `${price.amount} in ${price.territory}`;
-      plan.changes.push({ scope, field: "price", kind: existing?.price ? "change" : "add", ...(existing?.price ? { from: show(existing.price) } : {}), to: show(file.price) });
-      // A new price replaces the whole schedule: the prices set by hand that the files don't show would go.
-      const others = existing?.otherPrices ?? [];
-      const describe = (p: OtherPrice) => `${show(p)}${p.startDate ? ` from ${p.startDate}` : ""}${p.endDate ? ` until ${p.endDate}` : ""}`;
-      if (others.length && !options.prune) {
-        throw new ShipError(
-          `${scope} has prices set by hand that a new price would replace: ${others.map(describe).join("; ")}`,
-          "manual-prices",
-          "Push with --prune to replace them with the new price (Apple then sets every other territory to match), or change them in App Store Connect.",
-          { productId: purchase.productId, prices: others },
-        );
-      }
-      for (const other of others) plan.changes.push({ scope, field: "price", kind: "remove", from: describe(other), to: null });
-    }
-    const availability = desiredAvailability(file, territories, existing?.availability ?? null);
-    if (availability && !(existing?.availability && same(existing.availability.territories, availability.territories) && existing.availability.newTerritories === availability.newTerritories)) {
-      item.availability = availability;
-      const show = (a: Availability) => `${a.territories.length === territories.length ? "every territory" : a.territories.join(", ")}${a.newTerritories ? ", and new ones" : ""}`;
-      plan.changes.push({ scope, field: "availability", kind: existing?.availability ? "change" : "add", ...(existing?.availability ? { from: show(existing.availability) } : {}), to: show(availability) });
-    }
+    const priced = planPriceAndAvailability(scope, purchase.productId, file, existing ?? null, territories, options);
+    plan.changes.push(...priced.changes);
+    if (priced.price) item.price = priced.price;
+    if (priced.availability) item.availability = priced.availability;
 
     if (item.create || Object.keys(item.update).length || item.price || item.availability || Object.values(item.localizations).some((list) => list.length)) plan.purchases.push(item);
   }
@@ -407,14 +338,6 @@ export async function pullPurchases(project: Project, options: { appId: string; 
   for (const path of written) await writeText(join(dir, path), files.get(path)!);
   return { dir, written, unchanged };
 }
-
-const jsonSame = (a: string, b: string) => {
-  try {
-    return same(JSON.parse(a), JSON.parse(b));
-  } catch {
-    return false;
-  }
-};
 
 /** Reads the folder, checks it, and compares it with App Store Connect. Stops on validation errors before asking App Store Connect anything. */
 export async function diffPurchases(project: Project, options: { appId: string; products?: string[]; prune?: boolean }) {

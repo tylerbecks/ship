@@ -3,12 +3,12 @@
 
 import { existsSync } from "node:fs";
 import { relative } from "node:path";
-import { type Command, type Context, boolFlag, checkActionFlags, listFlag, stringFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags } from "../command";
 import { loadProject } from "../config";
 import { changesJSON, renderChanges } from "../diff";
-import { problemsSuite, writeJUnit } from "../junit";
-import { PRODUCT_ID, diffPurchases, pullPurchases, purchasesDir, pushPurchases, readPurchases, validatePurchases } from "../store/purchases";
+import { diffPurchases, pullPurchases, purchasesDir, pushPurchases, readPurchases, validatePurchases } from "../store/purchases";
 import { ShipError, ui } from "../ui";
+import { CATALOG_ACTIONS, CATALOG_ACTION_FLAGS, productFlag, reportValidate, usage } from "./catalog";
 import { appId } from "./status";
 
 export const purchasesHelp = `ship purchases pull [--product <id>] [--force]
@@ -55,26 +55,16 @@ Connect takes for now.
   --exit-code      diff: exit 1 when there are changes (for CI)
   --junit <path>   validate: also write the problems as a JUnit report, for CI`;
 
-const ACTIONS = ["pull", "diff", "push", "validate"];
 
-const ACTION_FLAGS: Record<string, string[]> = {
-  pull: ["product", "force"],
-  diff: ["product", "prune", "exit-code"],
-  push: ["product", "prune", "dry-run"],
-  validate: ["junit"],
-};
-
-const usage = (message: string, hint: string, details?: Record<string, unknown>) => new ShipError(message, "usage", hint, details, 2);
 
 async function purchases(ctx: Context) {
   const action = ctx.args[0];
-  if (!action || !ACTIONS.includes(action)) {
-    throw usage(action ? `Unknown purchases action "${action}"` : "Pass pull, diff, push, or validate", "ship purchases pull, then edit appstore/purchases/ and run ship purchases push", { choices: ACTIONS });
+  if (!action || !CATALOG_ACTIONS.includes(action)) {
+    throw usage(action ? `Unknown purchases action "${action}"` : "Pass pull, diff, push, or validate", "ship purchases pull, then edit appstore/purchases/ and run ship purchases push", { choices: CATALOG_ACTIONS });
   }
   if (ctx.args.length > 1) throw usage(`ship purchases ${action} takes no other arguments`, "Pick purchases with --product <id>.");
-  checkActionFlags(ctx, "purchases", action, ACTION_FLAGS);
-  const products = [...new Set(listFlag(ctx, "product").map((id) => id.trim()))];
-  for (const id of products) if (!PRODUCT_ID.test(id)) throw usage(`"${id}" isn't a product id`, "Product ids are letters, digits, periods, and underscores, like com.example.app.pro.");
+  checkActionFlags(ctx, "purchases", action, CATALOG_ACTION_FLAGS);
+  const products = productFlag(ctx);
   const project = await loadProject({ app: ctx.app });
   const dir = purchasesDir(project);
   const shown = relative(process.cwd(), dir) || ".";
@@ -83,14 +73,7 @@ async function purchases(ctx: Context) {
     if (!existsSync(dir)) throw new ShipError(`There's no ${shown} yet`, "no-store", "Start it with `ship purchases pull`, or make purchases/<product id>/purchase.json.");
     const found = await readPurchases(dir);
     const problems = validatePurchases(found);
-    const valid = !problems.some((p) => p.severity === "error");
-    const junit = stringFlag(ctx, "junit");
-    if (junit) await writeJUnit(junit, problemsSuite("ship purchases validate", problems));
-    ui.result({ valid, problems }, () => {
-      if (!problems.length) return console.log(`${shown}: ${found.length} purchase${found.length === 1 ? "" : "s"}, ready to push.`);
-      for (const p of problems) console.log(`${p.severity === "error" ? "✗" : "!"} ${p.file}${p.field ? ` (${p.field})` : ""}: ${p.message}`);
-    });
-    if (!valid) process.exitCode = 1;
+    await reportValidate(ctx, "purchases", shown, found.length, "purchase", problems);
     return;
   }
 

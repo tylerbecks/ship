@@ -9,7 +9,8 @@ import { type Context, findCommand, parseFlags } from "../src/command";
 import { commands } from "../src/commands";
 import { appsPath } from "../src/config";
 import { useCredentials } from "../src/credentials";
-import { type LocalPurchase, type RemotePurchase, availabilityJSON, planPurchases, readPurchases, validatePurchases } from "../src/store/purchases";
+import { availabilityJSON } from "../src/store/catalog";
+import { type LocalPurchase, type RemotePurchase, planPurchases, readPurchases, validatePurchases } from "../src/store/purchases";
 import { ShipError, ui } from "../src/ui";
 import { type AscCall, captureLog, jsonApi, mockAsc, noRetryDelay, resource, temp, testCredentials } from "./helpers";
 

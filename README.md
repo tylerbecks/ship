@@ -189,16 +189,20 @@ appstore/
     en-US/description.txt  feedback-email.txt  …
   purchases/
     com.example.lift.pro/purchase.json  review-notes.txt  en-US/name.txt  …
+  subscriptions/
+    Lift Pro/en-US/name.txt  app-name.txt
+    Lift Pro/com.example.lift.monthly/subscription.json  review-notes.txt  en-US/name.txt  …
 ```
 
-Four commands share it, and each has the same four actions:
+Five commands share it, and each has the same four actions: `pull`, `diff`, `push`, and `validate`.
 
-| | The App Store page | Screenshots and previews | TestFlight test information | In-app purchases |
-|---|---|---|---|---|
-| `pull` | `ship metadata pull` | `ship screenshots pull` | `ship testflight pull` | `ship purchases pull` |
-| `diff` | `ship metadata diff` | `ship screenshots diff` | `ship testflight diff` | `ship purchases diff` |
-| `push` | `ship metadata push` | `ship screenshots push` | `ship testflight push` | `ship purchases push` |
-| `validate` | `ship metadata validate` | `ship screenshots validate` | `ship testflight validate` | `ship purchases validate` |
+| | `pull` · `diff` · `push` · `validate` |
+|---|---|
+| The App Store page | `ship metadata …` |
+| Screenshots and previews | `ship screenshots …` |
+| TestFlight test information | `ship testflight …` |
+| In-app purchases | `ship purchases …` |
+| Subscriptions | `ship subscriptions …` |
 
 **Coming from fastlane?** `ship metadata import` and `ship screenshots import` bring a fastlane deliver folder over (`--from`, default `fastlane/` next to ship.json), offline. Text files become their store-folder files (`release_notes.txt` is `whats-new.txt`, keywords go one per line, and `default/` fills in what a language doesn't have), `copyright.txt`, the category files, and `review_information/` go to `app.json` and `review-notes.txt`, and each screenshot goes in the display type its pixel size fits (or the one its file name says, or the one for the app's platform when a size fits two), numbered in fastlane's order. A display type folder the import fills ends up holding exactly fastlane's set: another image already in it is a conflict, and `--force` deletes it. What has no place yet (the Apple TV privacy policy, `app_rating_config.json`, iMessage screenshots) is listed, and so is `demo_password.txt`: ship keeps a reference to the password, never the password, so it says how to save it with `ship secret set`. Like `pull`, import won't overwrite a file that says something else without `--force`, and `--dry-run` shows what it would write.
 
@@ -323,7 +327,36 @@ appstore/purchases/
 }
 ```
 
-The price is one territory's, and Apple sets the others to match, as App Store Connect does unless you set them by hand; push picks Apple's price point for that amount. When there isn't one, push names the nearest: for a purchase that exists it stops before changing anything, and for a new one it stops right after making it, before its languages and the rest (push again once the amount is fixed). A new price replaces Apple's whole price schedule, so when a purchase has other prices set by hand (another territory's, or a change scheduled for later), push stops and lists them; `--prune` replaces them. `availability` takes `"all"` or a list of territories. push makes a purchase that has a folder but isn't in App Store Connect yet (it needs `type` and `referenceName`), and changes the rest. It never deletes a purchase, since Apple only lets one that was never submitted go; `--prune` deletes languages without a folder (and the hand-set prices above). A purchase's product id and type can't change, and Family Sharing can't go off once it's on; push says so instead of trying. A purchase is submitted with the app's next version, after a review screenshot is added in App Store Connect. Auto-renewing subscriptions aren't in-app purchases in the API, and aren't here yet.
+The price is one territory's, and Apple sets the others to match, as App Store Connect does unless you set them by hand; push picks Apple's price point for that amount. When there isn't one, push names the nearest: for a purchase that exists it stops before changing anything, and for a new one it stops right after making it, before its languages and the rest (push again once the amount is fixed). A new price replaces Apple's whole price schedule, so when a purchase has other prices set by hand (another territory's, or a change scheduled for later), push stops and lists them; `--prune` replaces them. `availability` takes `"all"` or a list of territories. push makes a purchase that has a folder but isn't in App Store Connect yet (it needs `type` and `referenceName`), and changes the rest. It never deletes a purchase, since Apple only lets one that was never submitted go; `--prune` deletes languages without a folder (and the hand-set prices above). A purchase's product id and type can't change, and Family Sharing can't go off once it's on; push says so instead of trying. A purchase is submitted with the app's next version, after a review screenshot is added in App Store Connect. Auto-renewing subscriptions aren't in-app purchases in the API; they have their own command.
+
+### Subscriptions
+
+Auto-renewable subscriptions live in `appstore/subscriptions/`, a folder per group named for the group's reference name, with `ship subscriptions pull`, `diff`, `push`, and `validate` (`--product <id>` narrows pull, diff, and push):
+
+```
+appstore/subscriptions/
+  Lift Pro/
+    en-US/
+      name.txt            the group's display name
+      app-name.txt        the app's name shown with it, when it differs
+    com.example.lift.monthly/
+      subscription.json   period, level, reference name, Family Sharing, price, where it's sold
+      review-notes.txt
+      en-US/name.txt  description.txt
+```
+
+```json
+{
+  "period": "ONE_MONTH",
+  "level": 1,
+  "referenceName": "Monthly",
+  "familySharing": true,
+  "price": { "territory": "USA", "amount": "4.99" },
+  "availability": { "territories": "all", "newTerritories": true }
+}
+```
+
+In a group folder, a folder with `subscription.json` in it is a subscription and any other is a language, so a product id that looks like a language code still works. `level` is the subscription's place in the group (1 is the highest, the one people upgrade to). A subscription has a price per territory: push sets the file's territory to that amount and every other territory to Apple's equivalent. People already subscribed keep what they pay unless the price says `"existingSubscribers": "update"`. A price set by hand in another territory (one that isn't Apple's equivalent of today's price) or one scheduled for later would be replaced, so push stops and lists them; `--prune` replaces them, deleting the scheduled ones. Where it's sold is the standard plan's (paid up front each period), not the monthly installment plan. push makes groups and subscriptions that have a folder but aren't in App Store Connect yet (a subscription needs `period` and `referenceName`), and never deletes either; `--prune` deletes languages without a folder. A subscription can't move to another group, and Family Sharing can't go off once it's on. To rename a group, rename it in App Store Connect and pull. Introductory, promotional, and win-back offers aren't here yet.
 
 ## Releasing to the App Store
 
@@ -418,8 +451,8 @@ ship api DELETE /v1/betaTesters/<id>
   The JSON error has it too, as `exitCode`.
 - `--read-only` (or `SHIP_READ_ONLY=1`) makes any command safe to try: reads work, and anything that would change App Store Connect (a POST, PATCH, or DELETE, or an upload) stops before it's sent, with code `read-only`. `ship beta` checks before it archives. Files in the repo, git, and the Keychain aren't App Store Connect, so `pull`, `ship version bump`, and `ship secret set` still write.
 - `ship help --json` lists every command (its usage lines, flags, and help), the global flags, and the exit codes; `ship <command> --help --json` gives one.
-- `--junit <path>` writes the checks of `ship release submit`, `ship doctor`, and the four `validate`s as a JUnit report, for CI to show as test results: what would block a release fails, and warnings pass with the warning as output.
+- `--junit <path>` writes the checks of `ship release submit`, `ship doctor`, and the five `validate`s as a JUnit report, for CI to show as test results: what would block a release fails, and warnings pass with the warning as output.
 - App Store Connect errors keep Apple's code (`api-409`), with `status` and Apple's `errors` array in the JSON. ship retries when Apple is busy (429, 5xx) and on network failures for requests that are safe to repeat.
-- `--dry-run` shows what `ship beta`, `ship builds expire`, the four `push`es, the two `import`s, `ship release`, `ship reviews reply`, `ship users`, `ship devices`, `ship sandbox`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
-- `ship metadata diff`, `ship screenshots diff`, `ship testflight diff`, and `ship purchases diff` take `--exit-code` (exit 1 when there are changes), for a CI check that the store folder and App Store Connect agree.
+- `--dry-run` shows what `ship beta`, `ship builds expire`, the five `push`es, the two `import`s, `ship release`, `ship reviews reply`, `ship users`, `ship devices`, `ship sandbox`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
+- `ship metadata diff`, `ship screenshots diff`, `ship testflight diff`, `ship purchases diff`, and `ship subscriptions diff` take `--exit-code` (exit 1 when there are changes), for a CI check that the store folder and App Store Connect agree.
 - A flag an action doesn't take is a usage error, never ignored.
