@@ -14,7 +14,7 @@ ship metadata push                 # edit them in a pull request, then push
 ship release submit --push         # push appstore/, attach the build, check, and submit for review
 ```
 
-Everything you'd otherwise click through in App Store Connect lives in the repo or behind a command: builds, testers, groups, feedback, the App Store page, screenshots, releases, and customer reviews. For the rest, `ship api` sends one signed request to any endpoint.
+Everything you'd otherwise click through in App Store Connect lives in the repo or behind a command: builds, testers, groups, feedback, the App Store page, screenshots, releases, customer reviews, the team, devices, and sandbox accounts. For the rest, `ship api` sends one signed request to any endpoint.
 
 ## Install
 
@@ -198,6 +198,8 @@ Three commands share it, and each has the same four actions:
 | `push` | `ship metadata push` | `ship screenshots push` | `ship testflight push` |
 | `validate` | `ship metadata validate` | `ship screenshots validate` | `ship testflight validate` |
 
+**Coming from fastlane?** `ship metadata import` and `ship screenshots import` bring a fastlane deliver folder over (`--from`, default `fastlane/` next to ship.json), offline. Text files become their store-folder files (`release_notes.txt` is `whats-new.txt`, keywords go one per line, and `default/` fills in what a language doesn't have), `copyright.txt`, the category files, and `review_information/` go to `app.json` and `review-notes.txt`, and each screenshot goes in the display type its pixel size fits (or the one its file name says, or the one for the app's platform when a size fits two), numbered in fastlane's order. A display type folder the import fills ends up holding exactly fastlane's set: another image already in it is a conflict, and `--force` deletes it. What has no place yet (the Apple TV privacy policy, `app_rating_config.json`, iMessage screenshots) is listed, and so is `demo_password.txt`: ship keeps a reference to the password, never the password, so it says how to save it with `ship secret set`. Like `pull`, import won't overwrite a file that says something else without `--force`, and `--dry-run` shows what it would write.
+
 The rules are the same everywhere: `pull` once to start, and it refuses to overwrite files you changed (`--force` does). `diff --exit-code` exits 1 when there are changes, for CI. `push --dry-run` shows what it would do; `push` validates first and stops on errors. `--prune` deletes in App Store Connect what has no file or folder here; without it, push only adds and replaces. A missing file is left alone; an empty file clears the field. Passwords are references (see [Secrets](#secrets)), never the password, and they show as `••••`. `validate` runs offline.
 
 ### The App Store page
@@ -338,6 +340,25 @@ ship reviews unreply <id>
 
 `--territory USA` narrows to one App Store, `--sort` takes `newest`, `oldest`, `lowest`, or `highest`, and `--limit` goes up to 200. `reply` replaces the reply a review has; Apple checks replies before they show (`PENDING_PUBLISH`), and takes up to 5,970 characters. `--text-file <path>` (or `-` for stdin) reads the reply from a file, and `--dry-run` shows it without sending. Reading reviews needs a key with the Customer Support, App Manager, or Admin role.
 
+## The team, devices, and sandbox accounts
+
+```
+ship users                                         # the team and open invitations, with roles and apps
+ship users invite ada@example.com --first Ada --last Lovelace --role developer --apps Lift
+ship users remove ada@example.com                  # or cancel their invitation
+
+ship devices                                       # registered devices: name, kind, model, UDID, status
+ship devices add 00008030-001A2D2E0C38802E --name "Ada's iPhone"
+ship devices rename "Ada's iPhone" "Test iPhone"
+ship devices disable "Test iPhone"                 # the API can't delete one; disabled still counts until the year renews
+
+ship sandbox                                       # sandbox Apple Accounts for testing purchases
+ship sandbox clear --all                           # erase what they've bought
+ship sandbox set a@sandbox.test --renewal 5m --territory GBR --interrupt
+```
+
+`--role` takes Apple's roles in lowercase with dashes (`app-manager`, `customer-support`, …) and repeats; `--apps` takes an App Store Connect id, an app from `ship apps`, or the bundle id of any of the team's apps, and repeats; without it the invitation is for every app (`--all-apps` says so). The global `--app` doesn't limit an invitation, so passing it without `--apps` or `--all-apps` is an error. Changing the team needs an Admin key. A device is its UDID or its name. The API can't make a sandbox account: add them in App Store Connect → Users and Access → Sandbox. Every change takes `--dry-run`.
+
 ## Anything else: `ship api`
 
 For what ship has no command for yet, `ship api` sends one request to the [App Store Connect API](https://developer.apple.com/documentation/appstoreconnectapi), signed with ship's key and retried like every other request, and prints Apple's JSON as it came back. `{app}` in the path is the app's App Store Connect id:
@@ -371,6 +392,6 @@ ship api DELETE /v1/betaTesters/<id>
 - `ship help --json` lists every command (its usage lines, flags, and help), the global flags, and the exit codes; `ship <command> --help --json` gives one.
 - `--junit <path>` writes the checks of `ship release submit`, `ship doctor`, and the three `validate`s as a JUnit report, for CI to show as test results: what would block a release fails, and warnings pass with the warning as output.
 - App Store Connect errors keep Apple's code (`api-409`), with `status` and Apple's `errors` array in the JSON. ship retries when Apple is busy (429, 5xx) and on network failures for requests that are safe to repeat.
-- `--dry-run` shows what `ship beta`, `ship builds expire`, the three `push`es, `ship release`, `ship reviews reply`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
+- `--dry-run` shows what `ship beta`, `ship builds expire`, the three `push`es, the two `import`s, `ship release`, `ship reviews reply`, `ship users`, `ship devices`, `ship sandbox`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
 - `ship metadata diff`, `ship screenshots diff`, and `ship testflight diff` take `--exit-code` (exit 1 when there are changes), for a CI check that the store folder and App Store Connect agree.
 - A flag an action doesn't take is a usage error, never ignored.
