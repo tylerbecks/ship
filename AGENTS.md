@@ -28,6 +28,8 @@
 - `src/ui.ts`: output; every error is a `ShipError` with a code and a hint. Its exit code comes from the code's kind (`EXIT`: 3 auth, 4 not found, 5 conflict, 6 read-only, 7 still pending); a new code that's one of those kinds goes in `EXIT_BY_CODE`
 - `src/wait.ts`: `--timeout` durations and `waitFor`, the polling loop behind `--wait` (tests swap `polling.sleep` and `polling.now`)
 - `src/junit.ts`: `--junit` reports from checks and validate problems
+- `bin/`: repo tools for agents, not part of ship: `agent-hook.ts` (the stop hook: `bun run check` when TypeScript changed) and `papercuts.ts` (`bun papercuts`)
+- `.agents/`: agent skills and subagents (canonical; `.claude/skills` and `.claude/agents` symlink here, CLAUDE.md → AGENTS.md). Hooks are wired in `.claude/settings.json` and `.codex/hooks.json`
 - `test/setup.ts` (preloaded by bunfig.toml): points SHIP_HOME at a temp folder, runs git without the machine's global config, and makes network, Keychain, and 1Password calls throw. `test/helpers.ts`: `mockAsc`, `jsonApi`, `resource`, `testCredentials`, `noRetryDelay`, `fakeKeychain`, `temp`, `git`, `captureLog`
 
 ## Rules
@@ -42,8 +44,46 @@
 
 ## Checking
 
-`bun test`, `bun run typecheck`, then `bun run install-local` to update `~/.local/bin/ship`.
+`bun run check` (typecheck, then `bun test`), then `bun run install-local` to update `~/.local/bin/ship`. The stop hook runs `bun run check` for you when TypeScript changed, and holds the turn until it passes.
 
 ## Commits
 
-Emoji conventional commits (🚀 feat, 🐛 fix, 📚 docs, 🛠️ refactor, ⚡ perf, 🧪 test, 🧹 chore). Commit only when asked.
+Emoji conventional commits (🚀 feat, 🐛 fix, 📚 docs, 🛠️ refactor, ⚡ perf, 🧪 test, 🧹 chore), with the `commit` skill. Commit only when asked. Every PR is squash-merged, so `main` gets the PR's title and description (the `pr` skill), not the branch's commits. No AI attribution in commits or PRs.
+
+## Papercuts
+
+When the repo itself costs you time (a misleading doc, a command that fails on a clean checkout, a missing script, a hook that misfires, an error hint that sent you the wrong way), file it in one line and keep working:
+
+```bash
+bun papercuts add "<what you hit, and what would have prevented it>" --tag <area> [--severity major] \
+  [--evidence "<the command, the error line, what got you past it>"]
+```
+
+- **Only repo-fixable friction:** a contributor on a fresh checkout would hit it too, and a change to code, scripts or docs would prevent it. Not your sandbox or network, your own typo, a flake that passed on retry, an Apple outage, or a product bug (fix or report that as usual).
+- **Severity:** `minor` (default) an annoyance, `major` cost real time, `blocker` you couldn't proceed.
+- **Evidence** lets someone who wasn't there fix it: give it for anything past an obvious one-liner. Quote the failing lines, not the whole output (4 KB max; `--evidence -` reads stdin).
+- **Already filed?** `bun papercuts list` first; if it's there, `bun papercuts again <id>` instead. Repeat hits are what review fixes first.
+- **Tags** name the area: `cli`, `asc`, `store`, `build`, `secrets`, `tests`, `hooks`, `docs`.
+- No secrets, API keys, issuer ids, or App Store Connect data in the text or evidence: the log is committed. Don't fix the cut mid-task unless it blocks you; `.papercuts.jsonl` is committed with your branch.
+
+Fixing them is the `papercuts` skill, run when asked.
+
+## Agent skills
+
+| Skill | Use |
+|---|---|
+| `commit` | Conventional commit with emoji, no scope |
+| `pr` | Push and open a GitHub PR whose description becomes the squash commit |
+| `babysit` | Watch a PR through Codex review, fix findings, and squash-merge it |
+| `clean-code` | Review a change with the `code-reviewer` + `comment-reviewer` agents |
+| `papercuts` | Triage the papercut log and fix the most-hit repo friction |
+
+## Code Review Rules
+
+Codex reviews every PR through its GitHub integration and follows this section. Comment `@codex review` to rerun it.
+
+- Hold changes to the Rules above. In particular: a renamed or removed `--json` field, error code, or exit code is a breaking change and needs `!` in the title; a write to App Store Connect must go through `api()` so read-only mode can stop it; a new error of a known kind goes in `EXIT_BY_CODE`.
+- Flag any secret written to a file, printed, or sent anywhere but Apple, and any test that could reach the network, the Keychain, or 1Password.
+- A flag must narrow every request it claims to (a `--version` that a wait or lookup ignores is a bug), and a flag an action ignores must be a usage error.
+- On a re-review (new commits on an already-reviewed PR), report only P0/P1 issues in the lines changed since your last review. Don't raise new P2s on code you already reviewed.
+- Skip `bun.lock` and `.papercuts.jsonl`. Don't comment on formatting.
