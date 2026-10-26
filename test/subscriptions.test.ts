@@ -380,6 +380,18 @@ describe("ship subscriptions", () => {
     expect((await rejected(() => ship(["subscriptions", "diff", "--product", "com.example.nope"]))).code).toBe("usage");
   });
 
+  test("push --product adds a new subscription to the group that already holds others", async () => {
+    const root = setup();
+    write(root, "Lift Pro/com.example.yearly/subscription.json", JSON.stringify({ period: "ONE_YEAR", referenceName: "Yearly" }));
+    mock = mockAsc(asc([pro]));
+    const diff = await ship(["subscriptions", "diff", "--product", "com.example.yearly"]);
+    expect(diff.changes.map((c: { field: string }) => c.field)).toEqual(["subscription"]);
+    expect(diff.onlyRemote).toEqual([]);
+    await ship(["subscriptions", "push", "--product", "com.example.yearly"]);
+    expect(writes(mock.calls)).toEqual(["POST /v1/subscriptions"]);
+    expect((mock.calls.at(-1)!.body as any).data.relationships.group.data.id).toBe("g1");
+  });
+
   test("a group's language: its changes are sent as Apple's fields", async () => {
     const root = setup();
     write(root, "Lift Pro/en-US/name.txt", "Lift Pro+");
@@ -408,8 +420,11 @@ describe("ship subscriptions", () => {
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
     expect(readFileSync(report, "utf8")).toContain('name="subscriptions/Lift Pro/com.example.monthly/subscription.json (period)"');
-    mock = mockAsc(asc([{ ...pro, name: "Pro/Plus" }]));
-    expect(await rejected(() => ship(["subscriptions", "pull"]))).toMatchObject({ code: "bad-group-name" });
+    for (const name of ["Pro/Plus", "..", ".Premium"]) {
+      mock?.restore();
+      mock = mockAsc(asc([{ ...pro, name }]));
+      expect(await rejected(() => ship(["subscriptions", "pull"]))).toMatchObject({ code: "bad-group-name" });
+    }
   });
 
   test("a price Apple doesn't have stops before anything changes; read-only stops a push", async () => {

@@ -207,7 +207,11 @@ export interface RemoteGroup {
   subscriptions: RemoteSubscription[];
 }
 
-/** Every group with its languages and subscriptions; `only` limits the subscriptions to these product ids (and groups to the ones holding them). */
+/**
+ * Every group with its languages and subscriptions; `only` limits the
+ * subscriptions to these product ids. Every group stays, even with none of
+ * them: a new subscription goes in a group that already exists.
+ */
 export async function fetchSubscriptions(appId: string, only?: string[]): Promise<{ groups: RemoteGroup[]; territories: string[] }> {
   const [list, territories] = await Promise.all([listGroups(appId), allTerritories()]);
   const groups = await inBatches(list, 3, async (group) => {
@@ -219,7 +223,7 @@ export async function fetchSubscriptions(appId: string, only?: string[]): Promis
     });
     return { group, localizations, subscriptions: remote };
   });
-  return { groups: only?.length ? groups.filter((g) => g.subscriptions.length) : groups, territories };
+  return { groups, territories };
 }
 
 /** The territory pull writes a subscription's price in: the US when it has one there, else its first. */
@@ -457,13 +461,20 @@ export interface SubscriptionsPullResult {
 /** Writes what App Store Connect has into the subscriptions folder. A file that differs is local work: pull stops and names it, unless `force`. */
 export async function pullSubscriptions(project: Project, options: { appId: string; products?: string[]; force?: boolean }): Promise<SubscriptionsPullResult> {
   const dir = subscriptionsDir(project);
-  const { groups, territories } = await fetchSubscriptions(options.appId, options.products);
-  const nested = groups.filter((g) => /[/\\]/.test(g.group.referenceName) || g.group.referenceName !== g.group.referenceName.trim() || !g.group.referenceName);
+  const fetched = await fetchSubscriptions(options.appId, options.products);
+  const { territories } = fetched;
+  // With --product, only the groups holding those subscriptions are written.
+  const groups = options.products?.length ? fetched.groups.filter((g) => g.subscriptions.length) : fetched.groups;
+  // A folder name can't hold a slash, ".." would write outside the folder, and a leading dot is a folder ship skips.
+  const nested = groups.filter((g) => {
+    const name = g.group.referenceName;
+    return !name || /[/\\]/.test(name) || name !== name.trim() || name.startsWith(".");
+  });
   if (nested.length) {
     throw new ShipError(
       `A group's folder is its reference name, and ${nested.map((g) => JSON.stringify(g.group.referenceName)).join(", ")} can't be a folder name`,
       "bad-group-name",
-      "Rename the group in App Store Connect (no slashes, no spaces at the ends), then pull again.",
+      "Rename the group in App Store Connect (no slashes, no spaces at the ends, not starting with a dot), then pull again.",
       { groups: nested.map((g) => g.group.referenceName) },
     );
   }
@@ -522,7 +533,10 @@ export async function diffSubscriptions(project: Project, options: { appId: stri
       handSet[subscription.productId] = await handSetPrices(found.subscription.id, found.prices, price.territory);
     }
   }
-  return { plan: planSubscriptions(local, remote, territories, { prune: options.prune, handSet, groupLanguages: !options.products?.length }), territories };
+  const plan = planSubscriptions(local, remote, territories, { prune: options.prune, handSet, groupLanguages: !options.products?.length });
+  // With --product, every other group and subscription is out of play, not only in App Store Connect.
+  if (options.products?.length) plan.onlyRemote = [];
+  return { plan, territories };
 }
 
 export interface SubscriptionsPushResult {
