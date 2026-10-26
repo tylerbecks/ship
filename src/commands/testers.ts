@@ -134,8 +134,8 @@ export async function testers(action: string, emails: string[], options: { app?:
         invited.push(email);
         ui.ok(`Invited ${email} to ${group.name}`);
       } catch (error) {
-        // One bad address shouldn't stop the rest.
-        if (!(error instanceof ShipError)) throw error;
+        // One bad address shouldn't stop the rest, but read-only mode stops them all (and exits 6).
+        if (!(error instanceof ShipError) || error.code === "read-only") throw error;
         const hint = group.isInternal && refusedTester(error) ? INTERNAL_TESTER_HINT : error.hint;
         failed.push({ email, message: error.message, code: error.code, ...(hint ? { hint } : {}) });
         ui.warn(`Couldn't invite ${email}: ${error.message}`);

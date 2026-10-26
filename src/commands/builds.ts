@@ -123,7 +123,8 @@ export async function showCommand(ctx: Context) {
   const id = await appId(project);
   const version = stringFlag(ctx, "version");
   if (boolFlag(ctx, "wait")) {
-    await waitForProcessing(id, number, platformInfo(project.platform).asc, { timeoutMs, later: `ship builds show ${number} --wait` });
+    const later = `ship builds show ${number}${version ? ` --version ${version}` : ""} --wait`;
+    await waitForProcessing(id, number, platformInfo(project.platform).asc, { timeoutMs, later, version });
   }
   const matches = await buildDetails(id, number, { version, platform: platformInfo(project.platform).asc });
   const build = (await withCommits(project, [pickOne(number, matches, version)]))[0]!;

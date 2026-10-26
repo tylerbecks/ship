@@ -134,6 +134,17 @@ describe("read-only mode", () => {
     expect(mock.calls.map((call) => call.method)).toEqual(["GET"]);
   });
 
+  test("a batch stops at the first refusal and exits 6, not 1", async () => {
+    setup();
+    mock = mockAsc((call) =>
+      call.path === `/v1/apps/${APP}/betaGroups` ? { json: jsonApi([resource("betaGroups", "g1", { name: "Beta", isInternalGroup: false, publicLinkEnabled: false })]) } : undefined,
+    );
+    policy.readOnly = true;
+    const error = await rejected(() => ship(["testers", "add", "a@example.com", "b@example.com"]));
+    expect(error).toMatchObject({ code: "read-only", exitCode: 6 });
+    expect(mock.calls.map((call) => call.method)).toEqual(["GET"]);
+  });
+
   test("ship api honors it too", async () => {
     setup();
     mock = mockAsc(() => ({ status: 204 }));
@@ -256,6 +267,13 @@ describe("waiting", () => {
     const found = await waitForProcessing(APP, "9", "IOS");
     expect(found.processingState).toBe("VALID");
     expect(mock.calls).toHaveLength(3);
+  });
+
+  test("a build: --version narrows the wait to that version's build", async () => {
+    fastClock();
+    mock = mockAsc((call) => (call.path === "/v1/builds" ? build("VALID") : undefined));
+    await waitForProcessing(APP, "9", "IOS", { version: "1.0" });
+    expect(mock.calls[0]!.query).toMatchObject({ "filter[version]": "9", "filter[preReleaseVersion.version]": "1.0" });
   });
 
   test("a build: still processing at the timeout exits 7, with how to pick up", async () => {

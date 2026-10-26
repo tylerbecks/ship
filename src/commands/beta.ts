@@ -1,7 +1,7 @@
 // ship beta and ship distribute: archive, upload, and send a build to TestFlight.
 
 import { join, relative } from "node:path";
-import { type Build, findBuild, highestBuildNumber, setExemptEncryption } from "../asc/builds";
+import { type Build, findBuild, highestBuildNumber, listBuilds, setExemptEncryption } from "../asc/builds";
 import { assertWritable } from "../asc/client";
 import { addBuildToGroup, betaGroups, setWhatToTest, submitForBetaReview } from "../asc/testflight";
 import { archive, buildPaths, checkBuildNumber, checkInfo, exportIPA, packageInfo, upload, withKeyFile } from "../build";
@@ -289,14 +289,15 @@ export const PROCESSING_TIMEOUT_MS = 60 * 60_000;
 
 /**
  * Waits for App Store Connect to receive and process a build (usually 5 to
- * 30 minutes). Times out with processing-timeout (exit 7); `later` is the
- * command that picks up from there.
+ * 30 minutes). `version` narrows it to that version's build, since two
+ * versions can share a build number. Times out with processing-timeout
+ * (exit 7); `later` is the command that picks up from there.
  */
 export async function waitForProcessing(
   id: string,
   number: string,
   platform: AscPlatform,
-  options: { timeoutMs?: number; later?: string } = {},
+  options: { timeoutMs?: number; later?: string; version?: string } = {},
 ): Promise<Build> {
   ui.step(`Waiting for App Store Connect to process build ${number}`);
   const timeoutMs = options.timeoutMs ?? PROCESSING_TIMEOUT_MS;
@@ -305,7 +306,7 @@ export async function waitForProcessing(
     timeoutMs,
     progress: (state) => ui.note(friendly(state) || state),
     check: async () => {
-      const found = await findBuild(id, number, platform);
+      const [found] = await listBuilds(id, { number, version: options.version, platform, limit: 1 });
       if (found?.processingState === "VALID") return { done: true, value: found };
       if (found && (found.processingState === "FAILED" || found.processingState === "INVALID")) {
         throw new ShipError(`App Store Connect couldn't process build ${number}`, "processing-failed", "Check the email from App Store Connect for the reason.");
