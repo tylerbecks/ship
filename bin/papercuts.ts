@@ -131,10 +131,10 @@ const { values, positionals } = (() => {
       allowPositionals: true,
       options: {
         tag: { type: "string", multiple: true },
-        severity: { type: "string", default: "minor" },
+        severity: { type: "string" },
         note: { type: "string" },
         evidence: { type: "string" },
-        all: { type: "boolean", default: false },
+        all: { type: "boolean" },
       },
     });
   } catch (e) {
@@ -143,10 +143,27 @@ const { values, positionals } = (() => {
   }
 })();
 
+/** The flags each command reads. Any other one is an error, not silently dropped (`list --tag` doesn't filter). */
+const FLAGS: Partial<Record<string, (keyof typeof values)[]>> = {
+  add: ["tag", "severity", "evidence"],
+  again: [],
+  resolve: ["note"],
+  list: ["all"],
+  show: [],
+};
+const allowed = FLAGS[command ?? ""];
+const ignored = (Object.keys(values) as (keyof typeof values)[]).find(
+  (flag) => values[flag] !== undefined && allowed && !allowed.includes(flag),
+);
+if (allowed && ignored) {
+  const takes = allowed.length ? `it takes ${allowed.map((f) => `--${f}`).join(", ")}` : "it takes no flags";
+  fail(`--${ignored} isn't for \`bun papercuts ${command}\` (${takes}).`);
+}
+
 if (command === "add") {
   const text = positionals.join(" ").replace(/\s+/g, " ").trim();
   if (!text) fail('Say what you hit: bun papercuts add "<friction, and what would have prevented it>"');
-  const severity = values.severity as Severity;
+  const severity = (values.severity ?? "minor") as Severity;
   if (!SEVERITIES.includes(severity)) fail(`--severity is one of ${SEVERITIES.join(", ")}.`);
   const at = now();
   const id = `pc_${createHash("sha256").update(`${at}\n${text}`).digest("hex").slice(0, 8)}`;

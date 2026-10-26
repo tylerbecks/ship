@@ -60,4 +60,17 @@ describe("bun papercuts", () => {
     expect(papercuts(file, "list").out).toBe("No open papercuts.");
     expect(papercuts(file, "again", id)).toMatchObject({ code: 2, err: expect.stringContaining("was resolved") });
   });
+
+  test("a flag the command doesn't read is an error, and writes nothing", () => {
+    const file = join(temp(), ".papercuts.jsonl");
+    const id = papercuts(file, "add", "a cut", "--tag", "docs").out.match(/pc_[0-9a-f]{8}/)![0];
+    const before = readFileSync(file, "utf8");
+    expect(papercuts(file, "list", "--tag", "hooks")).toMatchObject({ code: 2, err: "--tag isn't for `bun papercuts list` (it takes --all)." });
+    expect(papercuts(file, "again", id, "--evidence", "more")).toMatchObject({ code: 2, err: "--evidence isn't for `bun papercuts again` (it takes no flags)." });
+    expect(papercuts(file, "resolve", id, "--note", "x", "--severity", "major").code).toBe(2);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    // Each command still takes its own.
+    expect(papercuts(file, "list", "--all").code).toBe(0);
+    expect(papercuts(file, "add", "another", "--severity", "blocker", "--evidence", "line").code).toBe(0);
+  });
 });
