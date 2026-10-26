@@ -104,10 +104,17 @@ const EQUAL: Record<string, [string, string, string][]> = {
   "us-999": [["gb-999", "GBR", "9.99"], ["ca-1399", "CAN", "13.99"]],
 };
 
-function asc(groups: FakeGroup[]) {
+/** `fail` makes POSTs of these price points answer 409, as a push that breaks partway would see. */
+function asc(groups: FakeGroup[], options: { fail?: string[] } = {}) {
   const subscriptions = groups.flatMap((g) => g.subscriptions);
   return (call: AscCall) => {
     const { method, path } = call;
+    // Apple answers what's asked: without the plan filter or the include, these come back wrong, so the fake answers nothing.
+    if (method === "GET" && /\/(pricePoints|equalizations)$/.test(path) && call.query["filter[planType]"] !== "UPFRONT") return undefined;
+    if (method === "GET" && /^\/v1\/subscriptions\/[^/]+\/prices$/.test(path) && !call.query.include?.split(",").includes("territory")) return undefined;
+    if (method === "POST" && path === "/v1/subscriptionPrices" && options.fail?.includes((call.body as any).data.relationships.subscriptionPricePoint.data.id)) {
+      return { status: 409, json: { errors: [{ status: "409", code: "STATE_ERROR", title: "Not now" }] } };
+    }
     if (method === "GET" && path === `/v1/apps/${APP}/subscriptionGroups`) return { json: jsonApi(groups.map((g) => resource("subscriptionGroups", g.id, { referenceName: g.name }))) };
     if (method === "GET" && path === "/v1/territories") return { json: jsonApi(TERRITORIES.map((id) => resource("territories", id, {}))) };
     const group = groups.find((g) => path.startsWith(`/v1/subscriptionGroups/${g.id}/`));
@@ -140,7 +147,7 @@ function asc(groups: FakeGroup[]) {
       return { json: jsonApi(Object.entries(POINTS[territory] ?? {}).map(([amount, id]) => resource("subscriptionPricePoints", id, { customerPrice: amount }))) };
     }
     const equal = path.match(/^\/v1\/subscriptionPricePoints\/([^/]+)\/equalizations$/);
-    if (method === "GET" && equal) {
+    if (method === "GET" && equal && call.query["filter[subscription]"]) {
       return { json: jsonApi((EQUAL[equal[1]!] ?? []).map(([id, territory, amount]) => resource("subscriptionPricePoints", id, { customerPrice: amount }, { territory: { data: { type: "territories", id: territory } } }))) };
     }
     const plans = path.match(/^\/v1\/subscriptions\/([^/]+)\/planAvailabilities$/);
@@ -295,7 +302,7 @@ describe("ship subscriptions", () => {
     expect((await ship(["subscriptions", "push", "--dry-run"])).created).toEqual(["com.example.plus"]);
     expect(writes(mock.calls)).toEqual([]);
 
-    await ship(["subscriptions", "push"]);
+    expect(await ship(["subscriptions", "push"])).toMatchObject({ applied: true, created: ["com.example.plus"] });
     expect(writes(mock.calls)).toEqual([
       "POST /v1/subscriptionGroups",
       "POST /v1/subscriptionGroupLocalizations",
@@ -307,7 +314,8 @@ describe("ship subscriptions", () => {
       "POST /v1/subscriptionPlanAvailabilities",
     ]);
     const prices = mock.calls.filter((c) => c.path === "/v1/subscriptionPrices").map((c) => (c.body as any).data);
-    expect(prices.map((p) => `${p.relationships.territory.data.id} ${p.relationships.subscriptionPricePoint.data.id} ${p.attributes.preserveCurrentPrice}`)).toEqual(["USA us-999 true", "GBR gb-999 true", "CAN ca-1399 true"]);
+    // Apple's equivalents first, the file's own territory last.
+    expect(prices.map((p) => `${p.relationships.territory.data.id} ${p.relationships.subscriptionPricePoint.data.id} ${p.attributes.preserveCurrentPrice}`)).toEqual(["GBR gb-999 true", "CAN ca-1399 true", "USA us-999 true"]);
     const availability = mock.calls.find((c) => c.path === "/v1/subscriptionPlanAvailabilities")!.body as any;
     expect(availability.data.attributes).toEqual({ availableInNewTerritories: false, planType: "UPFRONT" });
     expect(availability.data.relationships.availableTerritories.data.map((t: { id: string }) => t.id)).toEqual(["GBR", "USA"]);
@@ -343,6 +351,65 @@ describe("ship subscriptions", () => {
       "POST /v1/subscriptionPrices",
       "POST /v1/subscriptionPrices",
     ]);
+  });
+
+  test("a price change that breaks partway leaves the file's territory alone, so the next diff still shows it", async () => {
+    const root = setup();
+    write(root, "Lift Pro/com.example.monthly/subscription.json", JSON.stringify({ price: { territory: "USA", amount: "9.99" } }));
+    mock = mockAsc(asc([pro], { fail: ["ca-1399"] }));
+    expect((await rejected(() => ship(["subscriptions", "push"]))).code).toBe("api-409");
+    const posted = mock.calls.filter((c) => c.path === "/v1/subscriptionPrices").map((c) => (c.body as any).data.relationships.territory.data.id);
+    expect(posted).not.toContain("USA");
+  });
+
+  test("--product leaves the group's languages alone, even with --prune", async () => {
+    const root = setup();
+    write(root, "Lift Pro/com.example.monthly/subscription.json", JSON.stringify({ level: 1 }));
+    mock = mockAsc(asc([pro]));
+    // The subscription's own languages are in play; the group's aren't.
+    const diff = await ship(["subscriptions", "diff", "--product", "com.example.monthly", "--prune"]);
+    expect(diff.changes.map((c: { scope: string; field: string }) => `${c.scope} ${c.field}`)).toEqual([
+      "subscriptions/Lift Pro/com.example.monthly level",
+      "subscriptions/Lift Pro/com.example.monthly/en-US localization",
+    ]);
+    expect(diff.onlyRemoteLocales).toEqual([]);
+    await ship(["subscriptions", "push", "--product", "com.example.monthly"]);
+    expect(writes(mock.calls)).toEqual(["PATCH /v1/subscriptions/s1"]);
+    // Without --product, the group's missing language folder is listed, and --prune would delete it.
+    expect((await ship(["subscriptions", "diff"])).onlyRemoteLocales).toContain("Lift Pro/en-US");
+    expect((await rejected(() => ship(["subscriptions", "diff", "--product", "com.example.nope"]))).code).toBe("usage");
+  });
+
+  test("a group's language: its changes are sent as Apple's fields", async () => {
+    const root = setup();
+    write(root, "Lift Pro/en-US/name.txt", "Lift Pro+");
+    write(root, "Lift Pro/en-US/app-name.txt", "Lift");
+    mock = mockAsc(asc([{ ...pro, subscriptions: [] }]));
+    await ship(["subscriptions", "push"]);
+    expect(mock.calls.find((c) => c.method === "PATCH")).toMatchObject({ path: "/v1/subscriptionGroupLocalizations/gl1", body: { data: { type: "subscriptionGroupLocalizations", id: "gl1", attributes: { name: "Lift Pro+" } } } });
+  });
+
+  test("a new subscription whose price Apple doesn't have stops right after it's made", async () => {
+    const root = setup();
+    write(root, "Lift Pro/com.example.yearly/subscription.json", JSON.stringify({ period: "ONE_YEAR", referenceName: "Yearly", price: { territory: "USA", amount: "5.00" } }));
+    write(root, "Lift Pro/com.example.yearly/en-US/name.txt", "Yearly");
+    mock = mockAsc(asc([{ ...pro, subscriptions: [] }]));
+    const error = await rejected(() => ship(["subscriptions", "push"]));
+    expect(error).toMatchObject({ code: "no-price-point", details: { created: ["com.example.yearly"] } });
+    expect(error.hint).toContain("was made, without its languages, price, or where it's sold");
+    expect(writes(mock.calls)).toEqual(["POST /v1/subscriptions"]);
+  });
+
+  test("validate runs offline and writes a JUnit report; pull refuses a group name that can't be a folder", async () => {
+    const root = setup();
+    write(root, "Lift Pro/com.example.monthly/subscription.json", JSON.stringify({ period: "WEEKLY" }));
+    const report = join(temp(), "junit.xml");
+    expect((await ship(["subscriptions", "validate", "--junit", report])).valid).toBe(false);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+    expect(readFileSync(report, "utf8")).toContain('name="subscriptions/Lift Pro/com.example.monthly/subscription.json (period)"');
+    mock = mockAsc(asc([{ ...pro, name: "Pro/Plus" }]));
+    expect(await rejected(() => ship(["subscriptions", "pull"]))).toMatchObject({ code: "bad-group-name" });
   });
 
   test("a price Apple doesn't have stops before anything changes; read-only stops a push", async () => {

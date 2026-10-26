@@ -262,10 +262,11 @@ export function filesFromRemote(group: RemoteGroup, territories: string[]): Map<
  * equivalent of today's price in `territory` (set by hand). Asks Apple for
  * that equivalent.
  */
-export async function handSetPrices(prices: RemoteSubscription["prices"], territory: string): Promise<(OtherPrice & { id: string })[]> {
+export async function handSetPrices(subscriptionId: string, prices: RemoteSubscription["prices"], territory: string): Promise<(OtherPrice & { id: string })[]> {
   const show = (p: TerritoryPrice) => ({ id: p.id, territory: p.territory, amount: p.amount, startDate: p.startDate, endDate: null });
   const base = prices.current.find((p) => p.territory === territory);
-  const equal = base ? new Map((await equalizations(base.pointId)).map((p) => [p.territory, p.id])) : new Map<string, string>();
+  // With no price in the file's territory yet, every other territory's price is one the new price would replace.
+  const equal = base ? new Map((await equalizations(subscriptionId, base.pointId)).map((p) => [p.territory, p.id])) : new Map<string, string>();
   const others = prices.current.filter((p) => p.territory !== territory && equal.get(p.territory) !== p.pointId);
   return [...others, ...prices.scheduled].map(show);
 }
@@ -349,7 +350,7 @@ export function planSubscriptions(
   local: LocalGroup[],
   remote: RemoteGroup[],
   territories: string[],
-  options: { prune?: boolean; handSet?: Record<string, (OtherPrice & { id: string })[]> } = {},
+  options: { prune?: boolean; handSet?: Record<string, (OtherPrice & { id: string })[]>; groupLanguages?: boolean } = {},
 ): SubscriptionsPlan {
   const plan: SubscriptionsPlan = { changes: [], groups: [], onlyRemote: [], onlyRemoteLocales: [] };
   const byName = new Map(remote.map((g) => [g.group.referenceName, g]));
@@ -359,7 +360,10 @@ export function planSubscriptions(
     const scope = `subscriptions/${group.referenceName}`;
     const item: GroupPlan = { referenceName: group.referenceName, ...(existing ? { id: existing.group.id } : {}), localizations: { create: [], update: [], delete: [] }, subscriptions: [] };
     if (!existing) plan.changes.push({ scope, field: "group", kind: "add", to: group.referenceName });
-    item.localizations = planLocales(scope, group.locales, existing?.localizations ?? [], ["name", "customAppName"], { prune: options.prune, what: "the group's display name" }, plan) as GroupPlan["localizations"];
+    // With --product, only those subscriptions are in play: an existing group's languages are left alone (a new group still gets its own).
+    if (options.groupLanguages !== false || !existing) {
+      item.localizations = planLocales(scope, group.locales, existing?.localizations ?? [], ["name", "customAppName"], { prune: options.prune, what: "the group's display name" }, plan) as GroupPlan["localizations"];
+    }
 
     for (const subscription of group.subscriptions) {
       const sscope = `${scope}/${subscription.productId}`;
@@ -454,6 +458,15 @@ export interface SubscriptionsPullResult {
 export async function pullSubscriptions(project: Project, options: { appId: string; products?: string[]; force?: boolean }): Promise<SubscriptionsPullResult> {
   const dir = subscriptionsDir(project);
   const { groups, territories } = await fetchSubscriptions(options.appId, options.products);
+  const nested = groups.filter((g) => /[/\\]/.test(g.group.referenceName) || g.group.referenceName !== g.group.referenceName.trim() || !g.group.referenceName);
+  if (nested.length) {
+    throw new ShipError(
+      `A group's folder is its reference name, and ${nested.map((g) => JSON.stringify(g.group.referenceName)).join(", ")} can't be a folder name`,
+      "bad-group-name",
+      "Rename the group in App Store Connect (no slashes, no spaces at the ends), then pull again.",
+      { groups: nested.map((g) => g.group.referenceName) },
+    );
+  }
   const found = new Set(groups.flatMap((g) => g.subscriptions.map((s) => s.subscription.productId)));
   const missing = (options.products ?? []).filter((id) => !found.has(id));
   if (missing.length) throw new ShipError(`App Store Connect has no subscription ${missing.join(", ")}`, "no-subscription", "`ship subscriptions pull` without --product writes every one.", { missing });
@@ -491,9 +504,7 @@ export async function diffSubscriptions(project: Project, options: { appId: stri
   for (const id of options.products ?? []) {
     if (!known.includes(id)) throw new ShipError(`There's no subscription folder for ${id}`, "usage", known.length ? `Pass one of: ${known.join(", ")}` : "Make one, or `ship subscriptions pull`.", { choices: known }, 2);
   }
-  const local = options.products?.length
-    ? all.map((g) => ({ ...g, locales: {}, subscriptions: g.subscriptions.filter((s) => options.products!.includes(s.productId)) })).filter((g) => g.subscriptions.length)
-    : all;
+  const local = options.products?.length ? all.map((g) => ({ ...g, subscriptions: g.subscriptions.filter((s) => options.products!.includes(s.productId)) })).filter((g) => g.subscriptions.length) : all;
   const errors = validateSubscriptions(local).filter((p) => p.severity === "error");
   if (errors.length) {
     throw new ShipError(`subscriptions/ has ${errors.length} problem${errors.length === 1 ? "" : "s"}: ${errors[0]!.file}: ${errors[0]!.message}`, "invalid-store", "See them all with `ship subscriptions validate`.", { problems: errors });
@@ -508,10 +519,10 @@ export async function diffSubscriptions(project: Project, options: { appId: stri
       if (!price || !found) continue;
       const current = found.prices.current.find((p) => p.territory === price.territory);
       if (current && sameAmount(current.amount, price.amount)) continue;
-      handSet[subscription.productId] = await handSetPrices(found.prices, price.territory);
+      handSet[subscription.productId] = await handSetPrices(found.subscription.id, found.prices, price.territory);
     }
   }
-  return { plan: planSubscriptions(local, remote, territories, { prune: options.prune, handSet }), territories };
+  return { plan: planSubscriptions(local, remote, territories, { prune: options.prune, handSet, groupLanguages: !options.products?.length }), territories };
 }
 
 export interface SubscriptionsPushResult {
@@ -536,11 +547,16 @@ async function pricePointFor(subscriptionId: string, productId: string, price: P
   );
 }
 
-/** Adds the price in its territory and Apple's equivalent in every other. */
+/**
+ * Adds Apple's equivalent of the price in every other territory, then the
+ * price in its own. The file's territory goes last: a push that fails
+ * partway leaves it on the old price, so the next diff still shows the
+ * change and the next push redoes the set.
+ */
 async function setPrice(subscriptionId: string, territory: string, pointId: string, preserve: boolean): Promise<void> {
-  const others = (await equalizations(pointId)).filter((p) => p.territory && p.territory !== territory);
-  const all = [{ territory, id: pointId }, ...others];
-  await inBatches(all, 5, (point) => addSubscriptionPrice(subscriptionId, point.territory, point.id, preserve));
+  const others = (await equalizations(subscriptionId, pointId)).filter((p) => p.territory && p.territory !== territory);
+  await inBatches(others, 5, (point) => addSubscriptionPrice(subscriptionId, point.territory, point.id, preserve));
+  await addSubscriptionPrice(subscriptionId, territory, pointId, preserve);
 }
 
 /** Sends the subscriptions folder to App Store Connect (or with dryRun, says what it would send). */

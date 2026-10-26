@@ -213,18 +213,18 @@ export async function subscriptionPrices(subscriptionId: string): Promise<{ curr
   return { current: [...current.values()].sort((a, b) => a.territory.localeCompare(b.territory)), scheduled: prices.filter((p) => p.startDate && p.startDate > now) };
 }
 
-/** The amounts a subscription can charge in a territory. */
+/** The amounts a subscription can charge in a territory, on the up-front plan (a point doesn't say its plan, so the filter must). */
 export async function subscriptionPricePoints(subscriptionId: string, territory: string): Promise<{ id: string; amount: string }[]> {
   const { data } = await all<{ customerPrice?: string }>(
-    `/v1/subscriptions/${encodeURIComponent(subscriptionId)}/pricePoints?filter[territory]=${encodeURIComponent(territory)}&fields[subscriptionPricePoints]=customerPrice&limit=8000`,
+    `/v1/subscriptions/${encodeURIComponent(subscriptionId)}/pricePoints?filter[territory]=${encodeURIComponent(territory)}&filter[planType]=${PLAN}&fields[subscriptionPricePoints]=customerPrice&limit=8000`,
   );
   return data.map((point) => ({ id: point.id, amount: point.attributes.customerPrice ?? "" }));
 }
 
-/** Apple's equivalent of a price point in every other territory. */
-export async function equalizations(pointId: string): Promise<{ id: string; territory: string; amount: string }[]> {
+/** Apple's equivalent of a subscription's price point in every other territory, on the up-front plan. */
+export async function equalizations(subscriptionId: string, pointId: string): Promise<{ id: string; territory: string; amount: string }[]> {
   const { data } = await all<{ customerPrice?: string }>(
-    `/v1/subscriptionPricePoints/${encodeURIComponent(pointId)}/equalizations?include=territory&fields[subscriptionPricePoints]=customerPrice,territory&limit=8000`,
+    `/v1/subscriptionPricePoints/${encodeURIComponent(pointId)}/equalizations?filter[subscription]=${encodeURIComponent(subscriptionId)}&filter[planType]=${PLAN}&include=territory&fields[subscriptionPricePoints]=customerPrice,territory&limit=8000`,
   );
   return data.map((point) => ({ id: point.id, territory: relationshipId(point, "territory") ?? "", amount: point.attributes.customerPrice ?? "" }));
 }

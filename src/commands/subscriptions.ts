@@ -3,13 +3,12 @@
 
 import { existsSync } from "node:fs";
 import { relative } from "node:path";
-import { type Command, type Context, boolFlag, checkActionFlags, listFlag, stringFlag } from "../command";
+import { type Command, type Context, boolFlag, checkActionFlags } from "../command";
 import { loadProject } from "../config";
 import { changesJSON, renderChanges } from "../diff";
-import { problemsSuite, writeJUnit } from "../junit";
-import { PRODUCT_ID } from "../store/purchases";
 import { diffSubscriptions, pullSubscriptions, pushSubscriptions, readSubscriptions, subscriptionsDir, validateSubscriptions } from "../store/subscriptions";
 import { ShipError, ui } from "../ui";
+import { CATALOG_ACTIONS, CATALOG_ACTION_FLAGS, productFlag, reportValidate, usage } from "./catalog";
 import { appId } from "./status";
 
 export const subscriptionsHelp = `ship subscriptions pull [--product <id>] [--force]
@@ -59,26 +58,16 @@ group in App Store Connect, then pull. validate runs offline.
   --exit-code      diff: exit 1 when there are changes (for CI)
   --junit <path>   validate: also write the problems as a JUnit report, for CI`;
 
-const ACTIONS = ["pull", "diff", "push", "validate"];
 
-const ACTION_FLAGS: Record<string, string[]> = {
-  pull: ["product", "force"],
-  diff: ["product", "prune", "exit-code"],
-  push: ["product", "prune", "dry-run"],
-  validate: ["junit"],
-};
-
-const usage = (message: string, hint: string, details?: Record<string, unknown>) => new ShipError(message, "usage", hint, details, 2);
 
 async function subscriptions(ctx: Context) {
   const action = ctx.args[0];
-  if (!action || !ACTIONS.includes(action)) {
-    throw usage(action ? `Unknown subscriptions action "${action}"` : "Pass pull, diff, push, or validate", "ship subscriptions pull, then edit appstore/subscriptions/ and run ship subscriptions push", { choices: ACTIONS });
+  if (!action || !CATALOG_ACTIONS.includes(action)) {
+    throw usage(action ? `Unknown subscriptions action "${action}"` : "Pass pull, diff, push, or validate", "ship subscriptions pull, then edit appstore/subscriptions/ and run ship subscriptions push", { choices: CATALOG_ACTIONS });
   }
   if (ctx.args.length > 1) throw usage(`ship subscriptions ${action} takes no other arguments`, "Pick subscriptions with --product <id>.");
-  checkActionFlags(ctx, "subscriptions", action, ACTION_FLAGS);
-  const products = [...new Set(listFlag(ctx, "product").map((id) => id.trim()))];
-  for (const id of products) if (!PRODUCT_ID.test(id)) throw usage(`"${id}" isn't a product id`, "Product ids are letters, digits, periods, and underscores, like com.example.app.monthly.");
+  checkActionFlags(ctx, "subscriptions", action, CATALOG_ACTION_FLAGS);
+  const products = productFlag(ctx);
   const project = await loadProject({ app: ctx.app });
   const dir = subscriptionsDir(project);
   const shown = relative(process.cwd(), dir) || ".";
@@ -88,14 +77,7 @@ async function subscriptions(ctx: Context) {
     const groups = await readSubscriptions(dir);
     const found = groups.flatMap((g) => g.subscriptions);
     const problems = validateSubscriptions(groups);
-    const valid = !problems.some((p) => p.severity === "error");
-    const junit = stringFlag(ctx, "junit");
-    if (junit) await writeJUnit(junit, problemsSuite("ship subscriptions validate", problems));
-    ui.result({ valid, problems }, () => {
-      if (!problems.length) return console.log(`${shown}: ${found.length} subscription${found.length === 1 ? "" : "s"}, ready to push.`);
-      for (const p of problems) console.log(`${p.severity === "error" ? "✗" : "!"} ${p.file}${p.field ? ` (${p.field})` : ""}: ${p.message}`);
-    });
-    if (!valid) process.exitCode = 1;
+    await reportValidate(ctx, "subscriptions", shown, found.length, "subscription", problems);
     return;
   }
 
