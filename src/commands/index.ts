@@ -15,6 +15,7 @@ import { commands as groups } from "./groups";
 import { commands as init } from "./init";
 import { commands as metadata } from "./metadata";
 import { commands as open } from "./open";
+import { commands as purchases } from "./purchases";
 import { commands as release } from "./release";
 import { commands as reviews } from "./reviews";
 import { commands as sandbox } from "./sandbox";
@@ -48,6 +49,7 @@ export const commands: Command[] = [
   ...version,
   ...metadata,
   ...screenshots,
+  ...purchases,
   ...release,
   ...reviews,
   // Anything else

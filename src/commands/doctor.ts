@@ -11,6 +11,7 @@ import { hasGenericPassword } from "../keychain";
 import { parseKeychainRef, runOp } from "../secrets";
 import { validateMedia } from "../store/media";
 import { validateStore } from "../store/metadata";
+import { purchasesDir, readPurchases, validatePurchases } from "../store/purchases";
 import { readBetaInfo, testflightDir, validateBetaInfo } from "../store/testflight";
 import { checksSuite, writeJUnit } from "../junit";
 import { ShipError, ui } from "../ui";
@@ -19,11 +20,11 @@ export const doctorHelp = `ship doctor [--app <name>] [--junit <path>]
 
 Checks everything ship needs: Xcode, altool, the API key and the Keychain
 items or 1Password it reads from, this repo's ship.json (or --app's), and
-(offline) the store folder, as the three validate commands would.
+(offline) the store folder, as the four validate commands would.
 
   --junit <path>  Also write the checks as a JUnit report, for CI`;
 
-/** The store folder's offline checks (all three validates), when there is one. */
+/** The store folder's offline checks (all four validates), when there is one. */
 export async function checkStore(project: Project): Promise<{ name: string; ok: boolean; detail: string; fix: string } | undefined> {
   if (!existsSync(project.storeDir)) return undefined;
   const name = `${relative(project.root, project.storeDir) || "."}/`;
@@ -34,6 +35,7 @@ export async function checkStore(project: Project): Promise<{ name: string; ok: 
       { command: "metadata", problems: await validateStore(project.storeDir) },
       { command: "screenshots", problems: (await validateMedia(project.storeDir, { platform: project.platform })).problems },
       { command: "testflight", problems: existsSync(beta) ? validateBetaInfo(await readBetaInfo(beta)) : [] },
+      { command: "purchases", problems: validatePurchases(await readPurchases(purchasesDir(project))) },
     ];
   } catch (error) {
     // A file too broken to read (like review.json that isn't JSON).
