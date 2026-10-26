@@ -88,7 +88,7 @@ interface FakePurchase {
   familySharable?: boolean;
   reviewNote?: string | null;
   localizations?: { id: string; locale: string; name: string; description?: string }[];
-  price?: { territory: string; pointId: string; amount: string };
+  price?: { territory: string; pointId: string; amount: string; others?: { territory: string; amount: string; startDate?: string; endDate?: string }[] };
   availability?: { id: string; territories: string[]; newTerritories: boolean };
 }
 
@@ -127,8 +127,17 @@ function asc(purchases: FakePurchase[], points: Record<string, string[]> = { USA
           [
             resource("inAppPurchasePrices", "old", { startDate: null, endDate: "2020-01-01" }, { territory: { data: { type: "territories", id: p.territory } }, inAppPurchasePricePoint: { data: { type: "inAppPurchasePricePoints", id: "pp-old" } } }),
             resource("inAppPurchasePrices", "now", { startDate: "2020-01-01", endDate: null }, { territory: { data: { type: "territories", id: p.territory } }, inAppPurchasePricePoint: { data: { type: "inAppPurchasePricePoints", id: p.pointId } } }),
+            ...(p.others ?? []).map((o, i) =>
+              resource("inAppPurchasePrices", `other${i}`, { startDate: o.startDate ?? null, endDate: o.endDate ?? null }, { territory: { data: { type: "territories", id: o.territory } }, inAppPurchasePricePoint: { data: { type: "inAppPurchasePricePoints", id: `pp-other${i}` } } }),
+            ),
           ],
-          { included: [resource("inAppPurchasePricePoints", "pp-old", { customerPrice: "0.49" }), resource("inAppPurchasePricePoints", p.pointId, { customerPrice: p.amount })] },
+          {
+            included: [
+              resource("inAppPurchasePricePoints", "pp-old", { customerPrice: "0.49" }),
+              resource("inAppPurchasePricePoints", p.pointId, { customerPrice: p.amount }),
+              ...(p.others ?? []).map((o, i) => resource("inAppPurchasePricePoints", `pp-other${i}`, { customerPrice: o.amount })),
+            ],
+          },
         ),
       };
     }
@@ -155,6 +164,7 @@ const remote = (overrides: Partial<RemotePurchase> & { productId?: string } = {}
   purchase: { id: "p1", productId: overrides.productId ?? "com.example.pro", type: "NON_CONSUMABLE", referenceName: "Pro", reviewNote: null, familySharable: false, state: "APPROVED" },
   localizations: [],
   price: null,
+  otherPrices: [],
   availability: null,
   ...overrides,
 });
@@ -166,7 +176,7 @@ const local = (file: LocalPurchase["file"], extra: Partial<LocalPurchase> = {}):
 describe("purchase files", () => {
   test("validate catches what Apple would refuse, offline", () => {
     const problems = validatePurchases([
-      local({ type: "AUTO_RENEWABLE" as never, referenceName: "x".repeat(65), familySharing: "yes" as never, price: { territory: "us", amount: "0.999" }, availability: { territories: [] } }, {
+      local({ type: "AUTO_RENEWABLE" as never, referenceName: "x".repeat(65), familySharing: "yes" as never, price: { territory: "us", amount: "0.9999" }, availability: { territories: ["us"] } }, {
         productId: "bad id",
         unknownKeys: ["tier"],
         locales: { "en-US": { name: "x".repeat(36), description: "y".repeat(56) }, xx: { name: "" } },
@@ -183,6 +193,10 @@ describe("purchase files", () => {
       "warning purchases/bad id/xx: xx isn't a language App Store Connect lists; check the folder's name",
     ]);
     expect(validatePurchases([local({ type: "CONSUMABLE", referenceName: "Coins", price: { territory: "USA", amount: "0.99" }, availability: { territories: "all" } })])).toEqual([]);
+    // Sold nowhere is what App Store Connect has for a purchase off sale, and a three-decimal currency's amount is fine.
+    expect(validatePurchases([local({ price: { territory: "KWT", amount: "0.290" }, availability: { territories: [] } })])).toEqual([]);
+    const more = validatePurchases([local({ type: "CONSUMABLE", familySharing: true, availability: { territories: ["USA", "USA"] } })]).map((p) => p.message);
+    expect(more).toEqual(["Family Sharing is only for non-consumable purchases (and subscriptions), not CONSUMABLE", "availability.territories lists a territory twice"]);
   });
 
   test("reads the folders", async () => {
@@ -210,10 +224,24 @@ describe("planning a push", () => {
     const plan = planPurchases([local({ type: "NON_CONSUMABLE", referenceName: "Pro", price: { territory: "USA", amount: "4.99" } }, { locales: { "en-US": { name: "Pro" } } })], [], TERRITORIES);
     expect(plan.purchases[0]).toMatchObject({ create: { type: "NON_CONSUMABLE", referenceName: "Pro" }, price: { territory: "USA", amount: "4.99" }, localizations: { create: [{ locale: "en-US", name: "Pro" }] } });
     expect(plan.changes.map((c) => `${c.kind} ${c.scope} ${c.field}`)).toEqual(["add purchases/com.example.pro purchase", "add purchases/com.example.pro/en-US name", "add purchases/com.example.pro price"]);
+    const shared = planPurchases([local({ type: "NON_CONSUMABLE", referenceName: "Pro", familySharing: true }, { notes: "Tap Upgrade." })], [], TERRITORIES);
+    expect(shared.changes.map((c) => c.field)).toEqual(["purchase", "familySharing", "reviewNotes"]);
+  });
+
+  test("a new price would replace prices set by hand, so it needs --prune", async () => {
+    const existing = remote({ price: { territory: "USA", amount: "4.99" }, otherPrices: [{ territory: "GBR", amount: "3.99", startDate: null, endDate: null }, { territory: "USA", amount: "5.99", startDate: "2027-01-01", endDate: null }] });
+    const files = local({ price: { territory: "USA", amount: "9.99" } });
+    const error = await rejected(() => planPurchases([files], [existing], TERRITORIES));
+    expect(error).toMatchObject({ code: "manual-prices", exitCode: 5 });
+    expect(error.message).toContain("3.99 in GBR; 5.99 in USA from 2027-01-01");
+    const pruned = planPurchases([files], [existing], TERRITORIES, { prune: true });
+    expect(pruned.changes.filter((c) => c.field === "price").map((c) => c.kind)).toEqual(["change", "remove", "remove"]);
+    // Without a new price, they're left alone.
+    expect(planPurchases([local({ price: { territory: "USA", amount: "4.99" } })], [existing], TERRITORIES).changes).toEqual([]);
   });
 
   test("a type can't change, and Family Sharing can't go off", async () => {
-    expect(await rejected(() => planPurchases([local({ type: "CONSUMABLE" })], [remote()], TERRITORIES))).toMatchObject({ code: "purchase-type-fixed", details: { type: "NON_CONSUMABLE" } });
+    expect(await rejected(() => planPurchases([local({ type: "CONSUMABLE" })], [remote()], TERRITORIES))).toMatchObject({ code: "purchase-type-fixed", exitCode: 5, details: { type: "NON_CONSUMABLE" } });
     const sharing = remote();
     sharing.purchase.familySharable = true;
     expect(await rejected(() => planPurchases([local({ familySharing: false })], [sharing], TERRITORIES))).toMatchObject({ code: "family-sharing-fixed" });
@@ -234,6 +262,8 @@ describe("planning a push", () => {
       { productId: "com.example.pro", id: "p1", update: { reviewNote: "Tap Upgrade." }, localizations: { create: [], update: [{ locale: "en-US", id: "l1", attributes: { description: "Everything." } }], delete: [] } },
     ]);
     expect(plan.onlyRemoteLocales).toEqual(["com.example.pro/fr-FR"]);
+    // Changes name the files' fields; the update has Apple's.
+    expect(plan.changes.find((c) => c.scope === "purchases/com.example.pro")).toEqual({ scope: "purchases/com.example.pro", field: "reviewNotes", kind: "add", to: "Tap Upgrade." });
     expect(planPurchases([files], [existing], TERRITORIES, { prune: true }).purchases[0]!.localizations.delete).toEqual([{ locale: "fr-FR", id: "l2" }]);
     // A new price and fewer territories.
     const moved = planPurchases([local({ price: { territory: "USA", amount: "9.99" }, availability: { territories: ["USA", "CAN"] } })], [existing], TERRITORIES);
@@ -267,8 +297,8 @@ describe("the requests", () => {
 
   test("the price is today's in the base territory, and none before one is set", async () => {
     mock = mockAsc(asc([{ id: "p1", productId: "a", price: { territory: "USA", pointId: "pp-9", amount: "4.99" } }, { id: "p2", productId: "b" }]));
-    expect(await purchasePrice("p1")).toEqual({ territory: "USA", amount: "4.99" });
-    expect(await purchasePrice("p2")).toBeNull();
+    expect(await purchasePrice("p1")).toEqual({ price: { territory: "USA", amount: "4.99" }, others: [] });
+    expect(await purchasePrice("p2")).toEqual({ price: null, others: [] });
   });
 });
 
@@ -306,7 +336,7 @@ describe("ship purchases", () => {
 
   test("push makes a new purchase, then its language, price, and availability", async () => {
     const root = setup();
-    purchaseFolder(root, "com.example.coins", { type: "CONSUMABLE", referenceName: "100 coins", price: { territory: "USA", amount: "0.99" }, availability: { territories: ["USA", "CAN"], newTerritories: false } }, { "en-US": { "name.txt": "100 Coins" } });
+    purchaseFolder(root, "com.example.coins", { type: "CONSUMABLE", referenceName: "100 coins", familySharing: false, price: { territory: "USA", amount: "0.99" }, availability: { territories: ["USA", "CAN"], newTerritories: false } }, { "en-US": { "name.txt": "100 Coins" } }, "Buy them in the shop.");
     mock = mockAsc(asc([]));
     const dry = await ship(["purchases", "push", "--dry-run"]);
     expect(dry).toMatchObject({ dryRun: true, applied: false, created: ["com.example.coins"] });
@@ -316,6 +346,8 @@ describe("ship purchases", () => {
     expect(pushed.applied).toBe(true);
     expect(writes(mock.calls)).toEqual(["POST /v2/inAppPurchases", "POST /v1/inAppPurchaseLocalizations", "POST /v1/inAppPurchasePriceSchedules", "POST /v1/inAppPurchaseAvailabilities"]);
     const post = (path: string) => mock!.calls.find((call) => call.method === "POST" && call.path === path)!.body as any;
+    expect(post("/v2/inAppPurchases").data.attributes).toEqual({ name: "100 coins", productId: "com.example.coins", inAppPurchaseType: "CONSUMABLE", reviewNote: "Buy them in the shop.", familySharable: false });
+    expect(post("/v1/inAppPurchaseAvailabilities").data.attributes).toEqual({ availableInNewTerritories: false });
     expect(post("/v1/inAppPurchaseLocalizations").data).toEqual({
       type: "inAppPurchaseLocalizations",
       attributes: { locale: "en-US", name: "100 Coins" },
@@ -332,6 +364,35 @@ describe("ship purchases", () => {
     const error = await rejected(() => ship(["purchases", "push"]));
     expect(error).toMatchObject({ code: "no-price-point", exitCode: 4, details: { nearest: ["0.99", "1.99", "4.99", "9.99"] } });
     expect(writes(mock.calls)).toEqual([]);
+  });
+
+  test("a new purchase whose price Apple doesn't have stops right after it's made", async () => {
+    const root = setup();
+    purchaseFolder(root, "com.example.coins", { type: "CONSUMABLE", referenceName: "Coins", price: { territory: "USA", amount: "5.00" } }, { "en-US": { "name.txt": "Coins" } });
+    mock = mockAsc(asc([]));
+    const error = await rejected(() => ship(["purchases", "push"]));
+    expect(error).toMatchObject({ code: "no-price-point", details: { created: ["com.example.coins"] } });
+    expect(error.hint).toContain("was made, without its languages, price, or where it's sold");
+    expect(writes(mock.calls)).toEqual(["POST /v2/inAppPurchases"]);
+  });
+
+  test("an existing purchase: a new price, a changed language, and --prune", async () => {
+    const root = setup();
+    purchaseFolder(root, "com.example.pro", { price: { territory: "USA", amount: "9.99" } }, { "en-US": { "name.txt": "Pro", "description.txt": "All of it." } });
+    mock = mockAsc(asc([{ ...pro, localizations: [...pro.localizations!, { id: "l2", locale: "fr-FR", name: "Pro" }] }]));
+    await ship(["purchases", "push", "--prune"]);
+    expect(writes(mock.calls)).toEqual(["PATCH /v1/inAppPurchaseLocalizations/l1", "DELETE /v1/inAppPurchaseLocalizations/l2", "POST /v1/inAppPurchasePriceSchedules"]);
+    expect(mock.calls.find((c) => c.method === "PATCH")!.body).toEqual({ data: { type: "inAppPurchaseLocalizations", id: "l1", attributes: { description: "All of it." } } });
+    const schedule = mock.calls.find((c) => c.path === "/v1/inAppPurchasePriceSchedules")!.body as any;
+    expect(schedule.data.relationships.baseTerritory).toEqual({ data: { type: "territories", id: "USA" } });
+    expect(schedule.included[0].relationships.inAppPurchasePricePoint.data.id).toBe("pp-USA-3");
+  });
+
+  test("pull --product names a purchase App Store Connect doesn't have", async () => {
+    setup();
+    mock = mockAsc(asc([pro]));
+    expect(await rejected(() => ship(["purchases", "pull", "--product", "com.example.typo"]))).toMatchObject({ code: "no-purchase", exitCode: 4, details: { choices: ["com.example.pro"] } });
+    expect((await ship(["purchases", "pull", "--product", "com.example.pro"])).written).toHaveLength(4);
   });
 
   test("purchases only in App Store Connect are listed, never deleted; --product narrows it", async () => {

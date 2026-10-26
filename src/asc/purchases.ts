@@ -6,6 +6,7 @@
 // sets one base territory's price and lets Apple equalize the rest, as App
 // Store Connect does unless you set territories by hand.
 
+import { ShipError } from "../ui";
 import { type Resource, all, del, get, one, patch, post, relationshipId } from "./client";
 
 /** Apple's InAppPurchaseType. Auto-renewing subscriptions aren't in-app purchases in the API. */
@@ -75,7 +76,15 @@ export function purchaseCreateBody(appId: string, purchase: NewPurchase) {
 
 export async function createPurchase(appId: string, purchase: NewPurchase): Promise<Purchase> {
   const created = one(await post<PurchaseAttributes>("/v2/inAppPurchases", purchaseCreateBody(appId, purchase)));
-  return created ? toPurchase(created) : { id: "", ...purchase, reviewNote: purchase.reviewNote ?? null, familySharable: purchase.familySharable ?? false, state: "MISSING_METADATA" };
+  if (!created) {
+    throw new ShipError(
+      `App Store Connect didn't say what it made for ${purchase.productId}`,
+      "api-bad-response",
+      "It may have been made anyway: `ship purchases diff` shows whether it's there now, and push carries on from where it is.",
+      { productId: purchase.productId },
+    );
+  }
+  return toPurchase(created);
 }
 
 /** The attributes that can change after a purchase is made (its product id and type can't). */
@@ -134,35 +143,52 @@ export const sameAmount = (a: string, b: string) => Number(a) === Number(b);
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-/** The price in effect today in the schedule's base territory, or null when the purchase has no price yet. */
-export async function purchasePrice(purchaseId: string): Promise<Price | null> {
+/** A price set by hand in the schedule other than today's base one: another territory's, or a change scheduled for later. */
+export interface OtherPrice extends Price {
+  startDate: string | null;
+  endDate: string | null;
+}
+
+/**
+ * The price in effect today in the schedule's base territory (null when the
+ * purchase has no price yet), and the other prices set by hand that are
+ * current or still to come. Setting a price replaces the whole schedule, so
+ * those would go.
+ */
+export async function purchasePrice(purchaseId: string): Promise<{ price: Price | null; others: OtherPrice[] }> {
   let schedule;
   try {
     schedule = one(await get(`/v2/inAppPurchases/${encodeURIComponent(purchaseId)}/iapPriceSchedule?include=baseTerritory`));
   } catch (error) {
-    if ((error as { code?: string }).code === "api-404") return null;
+    if ((error as { code?: string }).code === "api-404") return { price: null, others: [] };
     throw error;
   }
   const base = schedule && relationshipId(schedule, "baseTerritory");
-  if (!schedule || !base) return null;
+  if (!schedule || !base) return { price: null, others: [] };
   const { data, included } = await all<{ startDate?: string | null; endDate?: string | null }>(
     `/v1/inAppPurchasePriceSchedules/${encodeURIComponent(schedule.id)}/manualPrices?include=inAppPurchasePricePoint,territory&fields[inAppPurchasePricePoints]=customerPrice,territory&limit=200`,
   );
   const now = today();
+  const amountOf = (price: Resource) => {
+    const pointId = relationshipId(price, "inAppPurchasePricePoint");
+    const amount = included.find((item) => item.type === "inAppPurchasePricePoints" && item.id === pointId)?.attributes.customerPrice;
+    return typeof amount === "string" ? amount : "";
+  };
   const current = data.find((price) => {
     const { startDate, endDate } = price.attributes;
     return relationshipId(price, "territory") === base && (!startDate || startDate <= now) && (!endDate || endDate > now);
   });
-  const pointId = current && relationshipId(current, "inAppPurchasePricePoint");
-  const point = included.find((item) => item.type === "inAppPurchasePricePoints" && item.id === pointId);
-  const amount = point?.attributes.customerPrice;
-  return typeof amount === "string" ? { territory: base, amount } : null;
+  const others = data
+    .filter((price) => price !== current && (!price.attributes.endDate || price.attributes.endDate > now))
+    .map((price) => ({ territory: relationshipId(price, "territory") ?? "", amount: amountOf(price), startDate: price.attributes.startDate ?? null, endDate: price.attributes.endDate ?? null }));
+  const amount = current ? amountOf(current) : "";
+  return { price: amount ? { territory: base, amount } : null, others };
 }
 
 /** The price points a purchase can have in a territory: the amounts customers can be charged. */
 export async function pricePoints(purchaseId: string, territory: string): Promise<{ id: string; amount: string }[]> {
   const { data } = await all<{ customerPrice?: string }>(
-    `/v2/inAppPurchases/${encodeURIComponent(purchaseId)}/pricePoints?filter[territory]=${encodeURIComponent(territory)}&fields[inAppPurchasePricePoints]=customerPrice&limit=200`,
+    `/v2/inAppPurchases/${encodeURIComponent(purchaseId)}/pricePoints?filter[territory]=${encodeURIComponent(territory)}&fields[inAppPurchasePricePoints]=customerPrice&limit=8000`,
   );
   return data.map((point) => ({ id: point.id, amount: point.attributes.customerPrice ?? "" }));
 }

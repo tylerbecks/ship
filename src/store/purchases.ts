@@ -8,12 +8,14 @@
 // As everywhere in the store folder, a missing file or key isn't managed and
 // an empty one clears. push creates and changes purchases but never deletes
 // one (Apple only lets a purchase that was never submitted go); --prune
-// deletes languages a purchase has no folder for.
+// deletes languages a purchase has no folder for, and the prices set by hand
+// that a new price would replace.
 
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   type Availability,
+  type OtherPrice,
   PURCHASE_TYPES,
   type Price,
   type Purchase,
@@ -135,20 +137,24 @@ export function validatePurchases(purchases: LocalPurchase[]): Problem[] {
     if (file.referenceName !== undefined && (typeof file.referenceName !== "string" || !file.referenceName.trim())) error(json, "referenceName should be text", "referenceName");
     else if (file.referenceName && chars(file.referenceName) > PURCHASE_LIMITS.referenceName) error(json, `referenceName is ${chars(file.referenceName)} characters; the most is ${PURCHASE_LIMITS.referenceName}`, "referenceName");
     if (file.familySharing !== undefined && typeof file.familySharing !== "boolean") error(json, "familySharing should be true or false", "familySharing");
+    else if (file.familySharing === true && file.type && file.type !== "NON_CONSUMABLE") error(json, `Family Sharing is only for non-consumable purchases (and subscriptions), not ${file.type}`, "familySharing");
     if (file.price !== undefined) {
       const price = file.price as unknown;
       if (!isObject(price) || typeof price.territory !== "string" || typeof price.amount !== "string") {
         error(json, 'price should be like { "territory": "USA", "amount": "0.99" } (the amount as text, so 0.90 stays 0.90)', "price");
       } else {
         if (!/^[A-Z]{3}$/.test(price.territory)) error(json, `price.territory is a three-letter territory like USA, not "${price.territory}"`, "price.territory");
-        if (!/^\d+(\.\d{1,2})?$/.test(price.amount) || Number(price.amount) <= 0) error(json, `price.amount is what customers pay, like "0.99", not "${price.amount}"`, "price.amount");
+        if (!/^\d+(\.\d{1,3})?$/.test(price.amount) || Number(price.amount) <= 0) error(json, `price.amount is what customers pay, like "0.99", not "${price.amount}"`, "price.amount");
       }
     }
     if (file.availability !== undefined) {
       const availability = file.availability as unknown;
       const territories = isObject(availability) ? availability.territories : undefined;
-      if (!isObject(availability) || !(territories === "all" || (Array.isArray(territories) && territories.length && territories.every((t) => typeof t === "string" && /^[A-Z]{3}$/.test(t))))) {
+      // [] is sold nowhere: it's what App Store Connect has for a purchase taken off sale everywhere.
+      if (!isObject(availability) || !(territories === "all" || (Array.isArray(territories) && territories.every((t) => typeof t === "string" && /^[A-Z]{3}$/.test(t))))) {
         error(json, 'availability should be like { "territories": "all" } or { "territories": ["USA", "GBR"], "newTerritories": false }', "availability");
+      } else if (Array.isArray(territories) && new Set(territories).size !== territories.length) {
+        error(json, "availability.territories lists a territory twice", "availability.territories");
       } else if (availability.newTerritories !== undefined && typeof availability.newTerritories !== "boolean") {
         error(json, "availability.newTerritories should be true or false", "availability.newTerritories");
       }
@@ -172,19 +178,26 @@ export interface RemotePurchase {
   purchase: Purchase;
   localizations: PurchaseLocalization[];
   price: Price | null;
+  /** Prices set by hand besides today's base one (other territories, changes to come): a new price replaces them. */
+  otherPrices: OtherPrice[];
   availability: Availability | null;
+}
+
+/** Runs `body` on each item, a few at a time, so a big catalog doesn't send hundreds of requests at once. */
+async function inBatches<T, R>(items: T[], size: number, body: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += size) results.push(...(await Promise.all(items.slice(i, i + size).map(body))));
+  return results;
 }
 
 /** Every purchase with its localizations, price, and availability; `only` limits it to these product ids. */
 export async function fetchPurchases(appId: string, only?: string[]): Promise<{ purchases: RemotePurchase[]; territories: string[] }> {
   const [list, territories] = await Promise.all([listPurchases(appId), allTerritories()]);
   const wanted = list.filter((p) => !only?.length || only.includes(p.productId));
-  const purchases = await Promise.all(
-    wanted.map(async (purchase) => {
-      const [localizations, price, availability] = await Promise.all([purchaseLocalizations(purchase.id), purchasePrice(purchase.id), purchaseAvailability(purchase.id)]);
-      return { purchase, localizations, price, availability };
-    }),
-  );
+  const purchases = await inBatches(wanted, 5, async (purchase) => {
+    const [localizations, { price, others }, availability] = await Promise.all([purchaseLocalizations(purchase.id), purchasePrice(purchase.id), purchaseAvailability(purchase.id)]);
+    return { purchase, localizations, price, otherPrices: others, availability };
+  });
   return { purchases, territories };
 }
 
@@ -269,6 +282,8 @@ export function planPurchases(local: LocalPurchase[], remote: RemotePurchase[], 
       }
       item.create = { type: file.type, referenceName: file.referenceName, ...(file.familySharing !== undefined ? { familySharable: file.familySharing } : {}), ...(purchase.notes ? { reviewNote: purchase.notes } : {}) };
       plan.changes.push({ scope, field: "purchase", kind: "add", to: `${file.type} "${file.referenceName}"` });
+      if (file.familySharing !== undefined) plan.changes.push({ scope, field: "familySharing", kind: "add", to: file.familySharing });
+      if (purchase.notes) plan.changes.push({ scope, field: "reviewNotes", kind: "add", to: purchase.notes });
     } else {
       item.id = existing.purchase.id;
       if (file.type && file.type !== existing.purchase.type) {
@@ -282,12 +297,15 @@ export function planPurchases(local: LocalPurchase[], remote: RemotePurchase[], 
       if (file.familySharing === false && existing.purchase.familySharable) {
         throw new ShipError(`${scope} has Family Sharing on, and Apple doesn't let it go off again`, "family-sharing-fixed", `Set "familySharing": true in ${scope}/${PURCHASE_FILE}.`, { productId: purchase.productId });
       }
+      // Changes name the files' fields (what you edit); the update takes Apple's.
       const desired: Record<string, unknown> = {};
-      if (file.referenceName !== undefined) desired.name = file.referenceName;
-      if (file.familySharing !== undefined) desired.familySharable = file.familySharing;
-      if (purchase.notes !== undefined) desired.reviewNote = purchase.notes;
-      const changes = diffRecord(scope, { name: existing.purchase.referenceName, familySharable: existing.purchase.familySharable, reviewNote: existing.purchase.reviewNote }, desired);
-      for (const change of changes) (item.update as Record<string, unknown>)[change.field] = change.to ?? null;
+      if (file.referenceName !== undefined) desired.referenceName = file.referenceName;
+      if (file.familySharing !== undefined) desired.familySharing = file.familySharing;
+      if (purchase.notes !== undefined) desired.reviewNotes = purchase.notes;
+      const current = { referenceName: existing.purchase.referenceName, familySharing: existing.purchase.familySharable, reviewNotes: existing.purchase.reviewNote };
+      const changes = diffRecord(scope, current, desired);
+      const apiField: Record<string, keyof PurchaseUpdate> = { referenceName: "name", familySharing: "familySharable", reviewNotes: "reviewNote" };
+      for (const change of changes) (item.update as Record<string, unknown>)[apiField[change.field]!] = change.to ?? null;
       plan.changes.push(...changes);
     }
 
@@ -316,6 +334,18 @@ export function planPurchases(local: LocalPurchase[], remote: RemotePurchase[], 
       item.price = file.price;
       const show = (price: Price) => `${price.amount} in ${price.territory}`;
       plan.changes.push({ scope, field: "price", kind: existing?.price ? "change" : "add", ...(existing?.price ? { from: show(existing.price) } : {}), to: show(file.price) });
+      // A new price replaces the whole schedule: the prices set by hand that the files don't show would go.
+      const others = existing?.otherPrices ?? [];
+      const describe = (p: OtherPrice) => `${show(p)}${p.startDate ? ` from ${p.startDate}` : ""}${p.endDate ? ` until ${p.endDate}` : ""}`;
+      if (others.length && !options.prune) {
+        throw new ShipError(
+          `${scope} has prices set by hand that a new price would replace: ${others.map(describe).join("; ")}`,
+          "manual-prices",
+          "Push with --prune to replace them with the new price (Apple then sets every other territory to match), or change them in App Store Connect.",
+          { productId: purchase.productId, prices: others },
+        );
+      }
+      for (const other of others) plan.changes.push({ scope, field: "price", kind: "remove", from: describe(other), to: null });
     }
     const availability = desiredAvailability(file, territories, existing?.availability ?? null);
     if (availability && !(existing?.availability && same(existing.availability.territories, availability.territories) && existing.availability.newTerritories === availability.newTerritories)) {
@@ -343,6 +373,16 @@ export interface PurchasesPullResult {
 export async function pullPurchases(project: Project, options: { appId: string; products?: string[]; force?: boolean }): Promise<PurchasesPullResult> {
   const dir = purchasesDir(project);
   const { purchases, territories } = await fetchPurchases(options.appId, options.products);
+  const missing = (options.products ?? []).filter((id) => !purchases.some((p) => p.purchase.productId === id));
+  if (missing.length) {
+    const all = await listPurchases(options.appId);
+    throw new ShipError(
+      `App Store Connect has no purchase ${missing.join(", ")}`,
+      "no-purchase",
+      all.length ? `The app's purchases: ${all.map((p) => p.productId).join(", ")}` : "The app has no in-app purchases yet.",
+      { choices: all.map((p) => p.productId) },
+    );
+  }
   const written: string[] = [];
   const unchanged: string[] = [];
   const conflicts: string[] = [];
@@ -393,8 +433,6 @@ export async function diffPurchases(project: Project, options: { appId: string; 
   }
   const { purchases: remote, territories } = await fetchPurchases(options.appId, options.products);
   const plan = planPurchases(local, remote, territories, { prune: options.prune });
-  // A folder for one product id never reports the others as only-remote.
-  if (options.products?.length) plan.onlyRemote = [];
   return { plan, territories };
 }
 
@@ -435,11 +473,27 @@ export async function pushPurchases(project: Project, options: { appId: string; 
   const points = new Map<string, string>();
   for (const item of plan.purchases) if (item.price && item.id) points.set(item.productId, await pricePointFor(item.id, item.productId, item.price));
 
+  const created: string[] = [];
   for (const item of plan.purchases) {
     let id = item.id;
     if (item.create) {
       ui.step(`Making ${item.productId}`);
       id = (await createPurchase(options.appId, { productId: item.productId, ...item.create })).id;
+      created.push(item.productId);
+      // Its price points exist only now; a price Apple doesn't have stops here, before its languages and the rest.
+      if (item.price) {
+        try {
+          points.set(item.productId, await pricePointFor(id, item.productId, item.price));
+        } catch (error) {
+          if (!(error instanceof ShipError)) throw error;
+          throw new ShipError(
+            error.message,
+            error.code,
+            `${item.productId} was made, without its languages, price, or where it's sold. ${error.hint ?? ""} Then push again; it carries on from there.`.trim(),
+            { ...error.details, created },
+          );
+        }
+      }
     } else if (Object.keys(item.update).length) {
       ui.step(`Updating ${item.productId}`);
       await updatePurchase(id!, item.update);

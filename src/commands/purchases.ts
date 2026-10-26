@@ -38,7 +38,8 @@ sold:
 
 push makes a purchase that has a folder but isn't in App Store Connect yet,
 and changes the rest. It never deletes a purchase (Apple only lets one that
-was never submitted go); --prune deletes languages without a folder. A
+was never submitted go); --prune deletes languages without a folder,
+and lets a new price replace prices set by hand in App Store Connect. A
 purchase's product id and type can't change, and Family Sharing can't go
 off again once it's on. A missing file or key is left alone. validate runs
 offline: lengths (display name 35, description 55), types, and prices.
@@ -48,7 +49,8 @@ Connect takes for now.
 
   --product <id>   Only this product id; repeat for more
   --force          pull: overwrite files that differ from App Store Connect
-  --prune          diff, push: delete languages that have no folder here
+  --prune          diff, push: delete languages that have no folder here, and
+                   prices set by hand that a new price replaces
   --dry-run        push: show what would change, change nothing
   --exit-code      diff: exit 1 when there are changes (for CI)
   --junit <path>   validate: also write the problems as a JUnit report, for CI`;

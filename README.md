@@ -301,7 +301,7 @@ The demo account password is never written to the repo: `review.json` holds a re
 
 ### In-app purchases
 
-Consumable, non-consumable, and non-renewing subscription purchases live in `appstore/purchases/`, one folder per product id, with the same `pull`, `diff`, `push`, and `validate` as the rest of the store folder (`ship purchases …`, with `--product <id>` to narrow any of them):
+Consumable, non-consumable, and non-renewing subscription purchases live in `appstore/purchases/`, one folder per product id, with the same `pull`, `diff`, `push`, and `validate` as the rest of the store folder (`ship purchases …`; `--product <id>` narrows pull, diff, and push):
 
 ```
 appstore/purchases/
@@ -323,7 +323,7 @@ appstore/purchases/
 }
 ```
 
-The price is one territory's, and Apple sets the others to match, as App Store Connect does unless you set them by hand; push picks Apple's price point for that amount, and stops before changing anything when there isn't one, naming the nearest. `availability` takes `"all"` or a list of territories. push makes a purchase that has a folder but isn't in App Store Connect yet (it needs `type` and `referenceName`), and changes the rest. It never deletes a purchase, since Apple only lets one that was never submitted go; `--prune` deletes languages without a folder. A purchase's product id and type can't change, and Family Sharing can't go off once it's on; push says so instead of trying. A purchase is submitted with the app's next version, after a review screenshot is added in App Store Connect. Auto-renewing subscriptions aren't in-app purchases in the API, and aren't here yet.
+The price is one territory's, and Apple sets the others to match, as App Store Connect does unless you set them by hand; push picks Apple's price point for that amount. When there isn't one, push names the nearest: for a purchase that exists it stops before changing anything, and for a new one it stops right after making it, before its languages and the rest (push again once the amount is fixed). A new price replaces Apple's whole price schedule, so when a purchase has other prices set by hand (another territory's, or a change scheduled for later), push stops and lists them; `--prune` replaces them. `availability` takes `"all"` or a list of territories. push makes a purchase that has a folder but isn't in App Store Connect yet (it needs `type` and `referenceName`), and changes the rest. It never deletes a purchase, since Apple only lets one that was never submitted go; `--prune` deletes languages without a folder (and the hand-set prices above). A purchase's product id and type can't change, and Family Sharing can't go off once it's on; push says so instead of trying. A purchase is submitted with the app's next version, after a review screenshot is added in App Store Connect. Auto-renewing subscriptions aren't in-app purchases in the API, and aren't here yet.
 
 ## Releasing to the App Store
 
