@@ -763,7 +763,7 @@ describe("the command", () => {
   const run = (args: string[], flags: Record<string, unknown> = {}) => commands[0]!.run({ args, flags: flags as never, implicit: false });
 
   test("an unknown action names the choices", async () => {
-    await expect(run(["upload"])).rejects.toMatchObject({ code: "usage", exitCode: 2, details: { choices: ["pull", "diff", "push", "validate"] } });
+    await expect(run(["upload"])).rejects.toMatchObject({ code: "usage", exitCode: 2, details: { choices: ["pull", "diff", "push", "validate", "import"] } });
     await expect(run([])).rejects.toMatchObject({ code: "usage", exitCode: 2 });
   });
 

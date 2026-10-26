@@ -814,7 +814,7 @@ describe("pull and push", () => {
     process.chdir(p.root);
     const opts = { locales: [], force: false, dryRun: false, partial: false, prune: false, exitCode: false };
     await expect(metadata("validate", opts)).rejects.toMatchObject({ code: "no-store", hint: expect.stringContaining("ship metadata pull") });
-    await expect(metadata("publish", opts)).rejects.toMatchObject({ code: "usage", exitCode: 2, details: { choices: ["pull", "diff", "push", "validate"] } });
+    await expect(metadata("publish", opts)).rejects.toMatchObject({ code: "usage", exitCode: 2, details: { choices: ["pull", "diff", "push", "validate", "import"] } });
     expect(() => parseLocales(["en_US"])).toThrow(expect.objectContaining({ code: "usage", exitCode: 2 }));
     await writeText(join(p.storeDir, "en-US", "name.txt"), "L");
     ui.json = true;

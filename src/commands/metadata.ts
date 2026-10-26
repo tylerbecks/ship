@@ -3,10 +3,12 @@
 // the store folder, pulled from and pushed to App Store Connect.
 
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { type Command, type Context, boolFlag, checkActionFlags, checkArgs, flagHint, listFlag, stringFlag } from "../command";
 import { type Project, loadProject, relativeTo } from "../config";
 import { changesJSON, renderChanges } from "../diff";
 import { type Platform, parsePlatform } from "../platform";
+import { type ImportResult, importMetadata } from "../store/fastlane";
 import { LOCALE_PATTERN } from "../store/files";
 import { type Skip, appInfoSummary, prepare, pullMetadata, pushMetadata, validateStore, versionSummary } from "../store/metadata";
 import { problemsSuite, writeJUnit } from "../junit";
@@ -17,6 +19,7 @@ export const metadataHelp = `ship metadata pull [--version <x.y>] [--locale <cod
 ship metadata diff [--version <x.y>] [--locale <code>] [--prune] [--exit-code]
 ship metadata push [--version <x.y>] [--locale <code>] [--dry-run] [--partial] [--prune]
 ship metadata validate [--junit <path>]
+ship metadata import [--from <fastlane dir>] [--force] [--dry-run]
 
 Keeps the App Store page in the repo: the name, subtitle, description,
 keywords, What's New, URLs, categories, age rating, and App Review details
@@ -27,7 +30,9 @@ pull writes the files from App Store Connect; run it once to start. Fields
 App Store Connect has empty get empty files, so every field shows, and pull
 lists what App Review still needs. diff shows what push would change. push applies it to the version being
 prepared, adding languages that have a folder. validate checks lengths,
-URLs, and secrets offline.
+URLs, and secrets offline. import brings a fastlane deliver folder over
+(fastlane/metadata: each language's text, copyright, categories, and the
+App Review contact and notes), offline.
 
 Apple only allows most changes while a version is being prepared;
 promotional text can change any time. push says what can't change yet.
@@ -48,9 +53,10 @@ keychain:ship/lift-demo-password (see \`ship secret --help\`).
   --partial         push: apply what can change now, skip the rest
   --prune           push: delete languages that have no folder (diff shows it)
   --exit-code       diff: exit 1 when there are changes (for CI)
-  --junit <path>    validate: also write the problems as a JUnit report, for CI`;
+  --junit <path>    validate: also write the problems as a JUnit report, for CI
+  --from <dir>      import: the fastlane folder (default: fastlane/ next to ship.json)`;
 
-const ACTIONS = ["pull", "diff", "push", "validate"];
+const ACTIONS = ["pull", "diff", "push", "validate", "import"];
 
 /** Flags only some actions take (validate reads the whole folder, offline). */
 const ACTION_FLAGS: Record<string, string[]> = {
@@ -58,6 +64,7 @@ const ACTION_FLAGS: Record<string, string[]> = {
   diff: ["version", "locale", "platform", "prune", "exit-code"],
   push: ["version", "locale", "platform", "dry-run", "partial", "prune"],
   validate: ["junit"],
+  import: ["from", "force", "dry-run"],
 };
 
 interface Options {
@@ -71,6 +78,7 @@ interface Options {
   prune: boolean;
   exitCode: boolean;
   junit?: string;
+  from?: string;
 }
 
 /** --locale values, checked: "en-US", not "en_US". */
@@ -210,12 +218,31 @@ async function validate(project: Project, junit?: string): Promise<boolean> {
   return valid;
 }
 
+// MARK: import
+
+async function importFastlane(project: Project, options: Options) {
+  const from = options.from ?? join(project.root, "fastlane");
+  const result = await importMetadata(project, { from, force: options.force, dryRun: options.dryRun });
+  for (const warning of result.warnings) ui.warn(warning);
+  printImport(result, where(project), "metadata");
+}
+
+/** What an import wrote (or would), for people and --json. */
+export function printImport(result: ImportResult, store: string, command: "metadata" | "screenshots") {
+  ui.result(result, () => {
+    if (!result.written.length) return console.log(`${store}/ already has everything from ${result.from}.`);
+    console.log(`${result.dryRun ? "Would write" : "Wrote"} ${result.written.length} file${result.written.length === 1 ? "" : "s"} to ${store}/:`);
+    for (const path of result.written) console.log(`  ${path}`);
+    if (!result.dryRun) console.log(`\nCheck them with \`ship ${command} validate\`, compare with App Store Connect with \`ship ${command} diff\`, and commit.`);
+  });
+}
+
 // MARK: Command
 
 export async function metadata(action: string | undefined, options: Options): Promise<{ failed: boolean }> {
   if (!action || !ACTIONS.includes(action)) {
     throw new ShipError(
-      action ? `Unknown metadata action "${action}"` : "Pick an action: pull, diff, push, or validate",
+      action ? `Unknown metadata action "${action}"` : "Pick an action: pull, diff, push, validate, or import",
       "usage",
       `ship metadata ${ACTIONS.join(" | ")} (see \`ship metadata --help\`)`,
       { choices: ACTIONS },
@@ -228,6 +255,7 @@ export async function metadata(action: string | undefined, options: Options): Pr
   if (action === "push") await push(project, options);
   if (action === "diff") return { failed: (await diff(project, options)) && options.exitCode };
   if (action === "validate") return { failed: !(await validate(project, options.junit)) };
+  if (action === "import") await importFastlane(project, options);
   return { failed: false };
 }
 
@@ -244,6 +272,7 @@ function options(ctx: Context): Options {
     prune: boolFlag(ctx, "prune"),
     exitCode: boolFlag(ctx, "exit-code"),
     junit: stringFlag(ctx, "junit"),
+    from: stringFlag(ctx, "from"),
   };
 }
 
@@ -262,6 +291,7 @@ export const commands: Command[] = [
       partial: { type: "boolean" },
       "exit-code": { type: "boolean" },
       junit: { type: "string" },
+      from: { type: "string" },
     },
     run: async (ctx) => {
       if (ACTIONS.includes(ctx.args[0] ?? "")) {

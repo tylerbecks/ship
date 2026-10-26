@@ -3,22 +3,25 @@
 // Connect.
 
 import { existsSync } from "node:fs";
-import { relative } from "node:path";
+import { join, relative } from "node:path";
 import { type Command, type Context, boolFlag, checkActionFlags, checkArgs, flagHint, listFlag, stringFlag } from "../command";
 import { loadProject } from "../config";
 import { changesJSON } from "../diff";
 import { parsePlatform } from "../platform";
+import { importScreenshots } from "../store/fastlane";
 import { LOCALE_PATTERN } from "../store/files";
 import { PREVIEW_TYPES, SCREENSHOT_TYPES, isPreviewType, isScreenshotType } from "../store/images";
 import { type MediaOptions, diffMedia, pullMedia, renderMediaChanges, syncMedia, validateMedia } from "../store/media";
 import { problemsSuite, writeJUnit } from "../junit";
 import { ShipError, ui } from "../ui";
+import { printImport } from "./metadata";
 import { appId } from "./status";
 
 export const screenshotsHelp = `ship screenshots pull [--version <x.y>] [--locale <code>] [--force]
 ship screenshots diff [--version <x.y>] [--locale <code>] [--type <TYPE>] [--prune] [--exit-code]
 ship screenshots push [--version <x.y>] [--locale <code>] [--type <TYPE>] [--prune] [--dry-run] [--no-wait]
 ship screenshots validate [--junit <path>]
+ship screenshots import [--from <fastlane dir>] [--force] [--dry-run]
 
 Keeps the App Store screenshots and app previews in the repo, next to the
 page's text:
@@ -42,9 +45,14 @@ file matches which upload; commit it.
   --no-wait          push: don't wait for App Store Connect to process uploads
   --force            pull: overwrite local files that differ
   --exit-code        diff: exit 1 when there are changes (for CI)
-  --junit <path>     validate: also write the problems as a JUnit report, for CI`;
+  --junit <path>     validate: also write the problems as a JUnit report, for CI
+  --from <dir>       import: the fastlane folder (default: fastlane/ next to ship.json)
 
-const ACTIONS = ["pull", "diff", "push", "validate"];
+import copies a fastlane screenshots folder (fastlane/screenshots/<locale>/)
+into appstore/, each image in the display type its pixel size fits (or the
+one its file name says), numbered in fastlane's order.`;
+
+const ACTIONS = ["pull", "diff", "push", "validate", "import"];
 
 /** Flags only some actions take; --locale, --type, and --platform work with all of them. */
 const ACTION_FLAGS: Record<string, string[]> = {
@@ -52,6 +60,7 @@ const ACTION_FLAGS: Record<string, string[]> = {
   diff: ["version", "prune", "exit-code"],
   push: ["version", "prune", "dry-run", "no-wait"],
   validate: ["junit"],
+  import: ["from", "force", "dry-run"],
 };
 
 const usage = (message: string, hint: string, details?: Record<string, unknown>) => new ShipError(message, "usage", hint, details, 2);
@@ -175,6 +184,17 @@ async function validate(ctx: Context) {
   if (!valid) process.exitCode = 1;
 }
 
+async function importFastlane(ctx: Context) {
+  // import takes the whole folder; --locale and --type would be ignored, so they're a usage error.
+  if (listFlag(ctx, "locale").length || listFlag(ctx, "type").length || stringFlag(ctx, "platform")) {
+    throw usage("import brings over every language and type", "Drop --locale, --type, and --platform; delete what you don't want afterwards.");
+  }
+  const project = await loadProject({ app: ctx.app });
+  const result = await importScreenshots(project, { from: stringFlag(ctx, "from") ?? join(project.root, "fastlane"), force: boolFlag(ctx, "force"), dryRun: boolFlag(ctx, "dry-run") });
+  for (const warning of result.warnings) ui.warn(warning);
+  printImport(result, where(project, project.storeDir), "screenshots");
+}
+
 export const commands: Command[] = [
   {
     name: "screenshots",
@@ -191,6 +211,7 @@ export const commands: Command[] = [
       "no-wait": { type: "boolean" },
       "exit-code": { type: "boolean" },
       junit: { type: "string" },
+      from: { type: "string" },
     },
     run: async (ctx) => {
       const action = ctx.args[0];
@@ -203,8 +224,9 @@ export const commands: Command[] = [
       if (action === "diff") return diff(ctx);
       if (action === "push") return push(ctx);
       if (action === "validate") return validate(ctx);
+      if (action === "import") return importFastlane(ctx);
       throw usage(
-        action ? `Unknown screenshots action "${action}"` : "Pass pull, diff, push, or validate",
+        action ? `Unknown screenshots action "${action}"` : "Pass pull, diff, push, validate, or import",
         "For example: ship screenshots diff (see `ship screenshots --help`)",
         { choices: ACTIONS },
       );
