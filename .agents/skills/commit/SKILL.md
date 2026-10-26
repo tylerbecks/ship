@@ -62,8 +62,8 @@ hard-wrap: each paragraph is one physical line.
 Run `git commit -F -` with a single-quoted heredoc so the message reaches git exactly. Add no
 `Co-authored-by` trailer or other AI attribution.
 
-There's no pre-commit hook; the agent stop hook (`bin/agent-hook.ts`) runs `bun run check` when
-TypeScript changed. Never `--amend` a commit to fix it up; make another.
+There's no pre-commit hook; the agent stop hook (`bin/agent-hook.ts`) typechecks and tests when
+TypeScript changed, committed or not. Never `--amend` a commit to fix it up; make another.
 
 ## Examples
 

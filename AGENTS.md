@@ -28,7 +28,7 @@
 - `src/ui.ts`: output; every error is a `ShipError` with a code and a hint. Its exit code comes from the code's kind (`EXIT`: 3 auth, 4 not found, 5 conflict, 6 read-only, 7 still pending); a new code that's one of those kinds goes in `EXIT_BY_CODE`
 - `src/wait.ts`: `--timeout` durations and `waitFor`, the polling loop behind `--wait` (tests swap `polling.sleep` and `polling.now`)
 - `src/junit.ts`: `--junit` reports from checks and validate problems
-- `bin/`: repo tools for agents, not part of ship: `agent-hook.ts` (the stop hook: `bun run check` when TypeScript changed) and `papercuts.ts` (`bun papercuts`)
+- `bin/`: repo tools for agents, not part of ship: `agent-hook.ts` (the stop hook: typecheck and test when TypeScript changed) and `papercuts.ts` (`bun papercuts`)
 - `.agents/`: agent skills and subagents (canonical; `.claude/skills` and `.claude/agents` symlink here, CLAUDE.md → AGENTS.md). Hooks are wired in `.claude/settings.json` and `.codex/hooks.json`
 - `test/setup.ts` (preloaded by bunfig.toml): points SHIP_HOME at a temp folder, runs git without the machine's global config, and makes network, Keychain, and 1Password calls throw. `test/helpers.ts`: `mockAsc`, `jsonApi`, `resource`, `testCredentials`, `noRetryDelay`, `fakeKeychain`, `temp`, `git`, `captureLog`
 
@@ -44,7 +44,7 @@
 
 ## Checking
 
-`bun run check` (typecheck, then `bun test`), then `bun run install-local` to update `~/.local/bin/ship`. The stop hook runs `bun run check` for you when TypeScript changed, and holds the turn until it passes.
+`bun run check` (typecheck, then `bun test`), then `bun run install-local` to update `~/.local/bin/ship`. The stop hook typechecks and tests for you when TypeScript changed since the last passing check (uncommitted or committed), and sends the failures back before the turn ends. It does that once per new set of failures: the same failures twice in a row end the turn, with a note.
 
 ## Commits
 

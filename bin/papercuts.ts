@@ -62,7 +62,7 @@ function cuts(): Cut[] {
     try {
       e = JSON.parse(line) as Entry;
     } catch {
-      console.error(`.papercuts.jsonl:${i + 1}: not JSON, skipped`);
+      console.error(`${FILE}:${i + 1}: not JSON, skipped`);
       continue;
     }
     if (e.kind === "cut" && !byId.has(e.id)) byId.set(e.id, { ...e, hits: 1 });

@@ -8,7 +8,7 @@ repo=$1 pr=$2 interval=${3:-30}
 owner=${repo%/*} name=${repo#*/}
 
 snapshot() {
-  gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr" -f query='
+  gh api graphql -f owner="$owner" -f name="$name" -F pr="$pr" -f query='
     query($owner: String!, $name: String!, $pr: Int!) {
       repository(owner: $owner, name: $name) {
         pullRequest(number: $pr) {
@@ -37,7 +37,7 @@ snapshot() {
 
 first=$(snapshot)
 echo "$first"
-case $(jq -r .state <<<"$first") in MERGED|CLOSED) exit 0 ;; esac
+case $first in *'"state":"MERGED"'* | *'"state":"CLOSED"'*) exit 0 ;; esac
 
 deadline=$((SECONDS + 600))
 while ((SECONDS < deadline)); do

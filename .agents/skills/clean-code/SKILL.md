@@ -16,14 +16,14 @@ Argument: **$ARGUMENTS**
 ## Context
 
 - Branch: !`git branch --show-current`
-- Diff stat vs main: !`git diff --stat main...HEAD 2>/dev/null | tail -8`
+- Diff stat vs origin/main: !`git fetch -q origin main 2>/dev/null; git diff --stat origin/main...HEAD 2>/dev/null | tail -8`
 - Working tree: !`git status --porcelain | head -30`
 
 ## Scope
 
 | Argument                 | Review                                                                                                                                                           |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| empty                    | `BASE=$(git merge-base main HEAD)`; `git diff $BASE` plus untracked source (`git ls-files --others --exclude-standard`). On `main`: `git diff HEAD` + untracked. |
+| empty                    | `BASE=$(git merge-base origin/main HEAD)`; `git diff $BASE` plus untracked source (`git ls-files --others --exclude-standard`). On `main`: `git diff HEAD` + untracked. |
 | PR number or URL         | `gh pr diff "$ARGUMENTS"`                                                                                                                                        |
 | `A..B` / `A...B` / a rev | that range, or `git show <rev>`                                                                                                                                  |
 | paths                    | those files, whole                                                                                                                                               |
