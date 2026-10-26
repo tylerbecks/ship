@@ -45,6 +45,7 @@ const EXIT_BY_CODE: Record<string, number> = {
       "no-user",
       "no-device",
       "no-sandbox-tester",
+      "no-price-point",
     ].map((code) => [code, EXIT.notFound]),
   ),
   ...Object.fromEntries(

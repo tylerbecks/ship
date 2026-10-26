@@ -187,16 +187,18 @@ appstore/
   testflight/
     review.json  review-notes.txt
     en-US/description.txt  feedback-email.txt  …
+  purchases/
+    com.example.lift.pro/purchase.json  review-notes.txt  en-US/name.txt  …
 ```
 
-Three commands share it, and each has the same four actions:
+Four commands share it, and each has the same four actions:
 
-| | The App Store page | Screenshots and previews | TestFlight test information |
-|---|---|---|---|
-| `pull` | `ship metadata pull` | `ship screenshots pull` | `ship testflight pull` |
-| `diff` | `ship metadata diff` | `ship screenshots diff` | `ship testflight diff` |
-| `push` | `ship metadata push` | `ship screenshots push` | `ship testflight push` |
-| `validate` | `ship metadata validate` | `ship screenshots validate` | `ship testflight validate` |
+| | The App Store page | Screenshots and previews | TestFlight test information | In-app purchases |
+|---|---|---|---|---|
+| `pull` | `ship metadata pull` | `ship screenshots pull` | `ship testflight pull` | `ship purchases pull` |
+| `diff` | `ship metadata diff` | `ship screenshots diff` | `ship testflight diff` | `ship purchases diff` |
+| `push` | `ship metadata push` | `ship screenshots push` | `ship testflight push` | `ship purchases push` |
+| `validate` | `ship metadata validate` | `ship screenshots validate` | `ship testflight validate` | `ship purchases validate` |
 
 **Coming from fastlane?** `ship metadata import` and `ship screenshots import` bring a fastlane deliver folder over (`--from`, default `fastlane/` next to ship.json), offline. Text files become their store-folder files (`release_notes.txt` is `whats-new.txt`, keywords go one per line, and `default/` fills in what a language doesn't have), `copyright.txt`, the category files, and `review_information/` go to `app.json` and `review-notes.txt`, and each screenshot goes in the display type its pixel size fits (or the one its file name says, or the one for the app's platform when a size fits two), numbered in fastlane's order. A display type folder the import fills ends up holding exactly fastlane's set: another image already in it is a conflict, and `--force` deletes it. What has no place yet (the Apple TV privacy policy, `app_rating_config.json`, iMessage screenshots) is listed, and so is `demo_password.txt`: ship keeps a reference to the password, never the password, so it says how to save it with `ship secret set`. Like `pull`, import won't overwrite a file that says something else without `--force`, and `--dry-run` shows what it would write.
 
@@ -297,6 +299,32 @@ appstore/testflight/
 
 The demo account password is never written to the repo: `review.json` holds a reference (see [Secrets](#secrets)), and ship reads it only to send it to Apple. As in `app.json`, `pull` leaves it out and tells you how to save it; left out, App Store Connect's password stays as it is, and `""` or `null` clears it.
 
+### In-app purchases
+
+Consumable, non-consumable, and non-renewing subscription purchases live in `appstore/purchases/`, one folder per product id, with the same `pull`, `diff`, `push`, and `validate` as the rest of the store folder (`ship purchases …`, with `--product <id>` to narrow any of them):
+
+```
+appstore/purchases/
+  com.example.lift.pro/
+    purchase.json         type, reference name, Family Sharing, price, where it's sold
+    review-notes.txt      notes for App Review
+    en-US/
+      name.txt            the display name (up to 35 characters)
+      description.txt     up to 55 characters
+```
+
+```json
+{
+  "type": "NON_CONSUMABLE",
+  "referenceName": "Pro",
+  "familySharing": true,
+  "price": { "territory": "USA", "amount": "4.99" },
+  "availability": { "territories": "all", "newTerritories": true }
+}
+```
+
+The price is one territory's, and Apple sets the others to match, as App Store Connect does unless you set them by hand; push picks Apple's price point for that amount, and stops before changing anything when there isn't one, naming the nearest. `availability` takes `"all"` or a list of territories. push makes a purchase that has a folder but isn't in App Store Connect yet (it needs `type` and `referenceName`), and changes the rest. It never deletes a purchase, since Apple only lets one that was never submitted go; `--prune` deletes languages without a folder. A purchase's product id and type can't change, and Family Sharing can't go off once it's on; push says so instead of trying. A purchase is submitted with the app's next version, after a review screenshot is added in App Store Connect. Auto-renewing subscriptions aren't in-app purchases in the API, and aren't here yet.
+
 ## Releasing to the App Store
 
 Once a build of the version is in TestFlight, three commands take it to the App Store:
@@ -390,8 +418,8 @@ ship api DELETE /v1/betaTesters/<id>
   The JSON error has it too, as `exitCode`.
 - `--read-only` (or `SHIP_READ_ONLY=1`) makes any command safe to try: reads work, and anything that would change App Store Connect (a POST, PATCH, or DELETE, or an upload) stops before it's sent, with code `read-only`. `ship beta` checks before it archives. Files in the repo, git, and the Keychain aren't App Store Connect, so `pull`, `ship version bump`, and `ship secret set` still write.
 - `ship help --json` lists every command (its usage lines, flags, and help), the global flags, and the exit codes; `ship <command> --help --json` gives one.
-- `--junit <path>` writes the checks of `ship release submit`, `ship doctor`, and the three `validate`s as a JUnit report, for CI to show as test results: what would block a release fails, and warnings pass with the warning as output.
+- `--junit <path>` writes the checks of `ship release submit`, `ship doctor`, and the four `validate`s as a JUnit report, for CI to show as test results: what would block a release fails, and warnings pass with the warning as output.
 - App Store Connect errors keep Apple's code (`api-409`), with `status` and Apple's `errors` array in the JSON. ship retries when Apple is busy (429, 5xx) and on network failures for requests that are safe to repeat.
-- `--dry-run` shows what `ship beta`, `ship builds expire`, the three `push`es, the two `import`s, `ship release`, `ship reviews reply`, `ship users`, `ship devices`, `ship sandbox`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
-- `ship metadata diff`, `ship screenshots diff`, and `ship testflight diff` take `--exit-code` (exit 1 when there are changes), for a CI check that the store folder and App Store Connect agree.
+- `--dry-run` shows what `ship beta`, `ship builds expire`, the four `push`es, the two `import`s, `ship release`, `ship reviews reply`, `ship users`, `ship devices`, `ship sandbox`, and `ship version` would do, without changing anything (`ship beta --dry-run` doesn't build).
+- `ship metadata diff`, `ship screenshots diff`, `ship testflight diff`, and `ship purchases diff` take `--exit-code` (exit 1 when there are changes), for a CI check that the store folder and App Store Connect agree.
 - A flag an action doesn't take is a usage error, never ignored.
