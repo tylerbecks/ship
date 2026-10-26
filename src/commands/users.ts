@@ -1,6 +1,7 @@
 // ship users: who's on the App Store Connect team, inviting people, and
 // taking them off it.
 
+import { lookupApp } from "../asc/apps";
 import { type TeamMember, USER_ROLES, inviteUser, removeMember, teamMembers } from "../asc/users";
 import { type Command, type Context, boolFlag, checkActionFlags, listFlag, stringFlag } from "../command";
 import { loadProject } from "../config";
@@ -25,7 +26,8 @@ generate-individual-keys). Changing the team needs an Admin key.
   --last <name>    invite: their last name
   --role <role>    invite: a role; repeat for more
   --apps <app>     invite: only this app (a name from \`ship apps\`, a bundle id,
-                   or an App Store Connect id); repeat for more
+                   or an App Store Connect id); repeat for more. The global
+                   --app doesn't limit an invitation; --apps does
   --all-apps       invite: every app, now and later (the default without --apps)
   --provisioning   invite: let them manage certificates, devices, and profiles
   --dry-run        invite, remove: show what would change`;
@@ -50,6 +52,23 @@ export function parseRole(value: string): string {
 }
 
 const roleText = (roles: string[]) => roles.map((role) => role.toLowerCase().replaceAll("_", " ")).join(", ");
+
+/**
+ * An --apps value as App Store Connect's id: an id as is, an app set up on
+ * this machine by name or bundle id, or any of the team's apps by bundle id.
+ */
+export async function inviteAppId(value: string): Promise<string> {
+  const query = value.trim();
+  if (/^\d+$/.test(query)) return query;
+  try {
+    return await appId(await loadProject({ app: query }));
+  } catch (error) {
+    if (!(error instanceof ShipError) || error.code !== "unknown-app" || !query.includes(".")) throw error;
+  }
+  const app = await lookupApp(query);
+  if (!app) throw new ShipError(`No app on the team uses ${query}`, "no-asc-app", "Pass a name from `ship apps`, a bundle id the team uses, or the app's App Store Connect id.", { app: query });
+  return app.id;
+}
 
 /** The member with this email, ignoring case, or an error listing the team. */
 export function findMember(members: TeamMember[], email: string): TeamMember {
@@ -98,9 +117,12 @@ async function users(ctx: Context) {
     const roles = [...new Set(listFlag(ctx, "role").map(parseRole))];
     if (!roles.length) throw usage("Which role? Pass --role", `For example: ship users invite ${email} --first ${firstName} --last ${lastName} --role developer`);
     const appNames = listFlag(ctx, "apps");
+    // The global --app picks a repo; read here it would look like it limits the invitation, and it doesn't.
+    if (stringFlag(ctx, "app") !== undefined && !appNames.length && !boolFlag(ctx, "all-apps")) {
+      throw usage("--app doesn't limit an invitation", `To invite them to only that app, pass --apps: ship users invite ${email} … --apps ${stringFlag(ctx, "app")}. For every app, pass --all-apps.`);
+    }
     if (appNames.length && boolFlag(ctx, "all-apps")) throw usage("Pass --apps or --all-apps, not both", "--apps limits them to those apps; --all-apps gives them every app.");
-    // Each --apps value is anything --app takes; its App Store Connect id is what Apple wants.
-    const visibleApps = await Promise.all(appNames.map(async (name) => appId(await loadProject({ app: name }))));
+    const visibleApps = [...new Set(await Promise.all(appNames.map(inviteAppId)))];
     const invite = { email, firstName, lastName, roles, allAppsVisible: !visibleApps.length, visibleApps, provisioningAllowed: boolFlag(ctx, "provisioning") };
     const members = await teamMembers();
     const existing = members.find((m) => m.email.toLowerCase() === email.toLowerCase());

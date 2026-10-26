@@ -3,12 +3,13 @@
 // same files a pull would. Like pull, it won't overwrite a file that differs
 // unless asked to.
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Project } from "../config";
+import type { Platform } from "../platform";
 import { ShipError } from "../ui";
 import { LOCALE_PATTERN, type StoreApp, readStoreApp, readText, writeStoreApp, writeText } from "./files";
-import { SCREENSHOT_EXTENSIONS, SCREENSHOT_TYPES, type ScreenshotType, imageInfo, naturalCompare, sizesFor } from "./images";
+import { SCREENSHOT_EXTENSIONS, SCREENSHOT_TYPES, type ScreenshotType, imageInfo, naturalCompare, sizesFor, typePlatform } from "./images";
 import { REVIEW_NOTES_FILE, keywordsFromApi } from "./limits";
 
 /** fastlane's per-language files, and the store file each becomes. */
@@ -153,7 +154,7 @@ export async function readFastlaneMetadata(dir: string): Promise<FastlaneMetadat
   if (review.demoAccountName) review.demoAccountRequired = true;
   if (await readText(join(reviewDir, "demo_password.txt"))) {
     warnings.push(
-      `review_information/demo_password.txt holds the password itself, and ship keeps only a reference. Save it with \`ship secret set keychain:ship/demo-password --from-file ${join(reviewDir, "demo_password.txt")}\`, then set "demoAccountPassword": "keychain:ship/demo-password" in app.json`,
+      `review_information/demo_password.txt holds the password itself, and ship keeps only a reference. Save it with \`ship secret set keychain:ship/demo-password --from-file '${join(reviewDir, "demo_password.txt")}'\`, then set "demoAccountPassword": "keychain:ship/demo-password" in app.json`,
     );
   }
   if (Object.keys(review).length) app.review = review;
@@ -164,12 +165,23 @@ export async function readFastlaneMetadata(dir: string): Promise<FastlaneMetadat
   return { from, files, app, warnings };
 }
 
-/** The screenshot display type an image this size fits, preferring a type named in its file name. */
-export function screenshotTypeFor(width: number, height: number, fileName = ""): ScreenshotType | undefined {
+/**
+ * The screenshot display type an image this size fits, preferring a type
+ * named in its file name, then one for the app's platform (3840x2160 is
+ * both Apple TV and Vision Pro).
+ */
+export function screenshotTypeFor(width: number, height: number, fileName = "", platform?: Platform): ScreenshotType | undefined {
   const types = (Object.keys(SCREENSHOT_TYPES) as ScreenshotType[]).filter((type) => !type.startsWith("IMESSAGE_"));
   const fits = types.filter((type) => sizesFor(type).some(([w, h]) => w === width && h === height));
   const named = fits.find((type) => fileName.toUpperCase().includes(type));
-  return named ?? fits[0];
+  return named ?? fits.find((type) => platform && typePlatform(type) === platform) ?? fits[0];
+}
+
+/** fastlane's file name for the store folder: its own leading number dropped (ship's order prefix replaces it), cleaned. */
+export function importedName(name: string): string {
+  const ext = extname(name).toLowerCase();
+  const stem = cleanName(name.slice(0, name.length - ext.length).replace(/^\d+[_-]?/, "")).replace(/^[-.]+|[-.]+$/g, "");
+  return `${stem || "screenshot"}${ext}`;
 }
 
 /** A file name for the store folder: lowercase, dashes for spaces and odd characters. */
@@ -181,7 +193,7 @@ const cleanName = (name: string) =>
     .replace(/^-|-(?=\.)/g, "");
 
 /** What a fastlane screenshots folder becomes: each image in its display type's folder, numbered in fastlane's order. */
-export async function readFastlaneScreenshots(dir: string): Promise<FastlaneScreenshots> {
+export async function readFastlaneScreenshots(dir: string, platform?: Platform): Promise<FastlaneScreenshots> {
   const from = fastlaneFolder(dir, "screenshots");
   const copies: { from: string; to: string }[] = [];
   const warnings: string[] = [];
@@ -198,7 +210,7 @@ export async function readFastlaneScreenshots(dir: string): Promise<FastlaneScre
     const byType = new Map<ScreenshotType, string[]>();
     for (const name of images) {
       const info = imageInfo(new Uint8Array(await Bun.file(join(from, locale, name)).arrayBuffer()));
-      const type = info && screenshotTypeFor(info.width, info.height, name);
+      const type = info && screenshotTypeFor(info.width, info.height, name, platform);
       if (!type) {
         warnings.push(`Skipped ${locale}/${name}: ${info ? `${info.width}x${info.height} isn't a screenshot size App Store Connect takes` : "ship can't read it as a PNG or JPEG"}`);
         continue;
@@ -207,9 +219,7 @@ export async function readFastlaneScreenshots(dir: string): Promise<FastlaneScre
     }
     for (const [type, names] of byType) {
       names.forEach((name, i) => {
-        // fastlane names often start with their own number; ship's order prefix replaces it.
-        const stem = cleanName(name.replace(/^\d+[_-]?/, "")) || `screenshot${extname(name).toLowerCase()}`;
-        copies.push({ from: join(from, locale, name), to: `${locale}/screenshots/${type}/${String(i + 1).padStart(2, "0")}-${stem}` });
+        copies.push({ from: join(from, locale, name), to: `${locale}/screenshots/${type}/${String(i + 1).padStart(2, "0")}-${importedName(name)}` });
       });
     }
   }
@@ -222,16 +232,22 @@ export interface ImportResult {
   from: string;
   written: string[];
   unchanged: string[];
+  /** Files deleted to match fastlane (screenshots import --force: images in a type folder fastlane doesn't have). */
+  removed: string[];
   warnings: string[];
   dryRun: boolean;
 }
 
-function conflictError(conflicts: string[], storeDir: string, command: string): ShipError {
+function conflictError(conflicts: string[], storeDir: string, command: string, extras: string[] = []): ShipError {
+  const lines = [...conflicts, ...extras.map((path) => `${path} (fastlane doesn't have it)`)];
+  const count = lines.length;
   return new ShipError(
-    `${conflicts.length} file${conflicts.length === 1 ? "" : "s"} in ${storeDir} already say${conflicts.length === 1 ? "s" : ""} something else:\n  ${conflicts.join("\n  ")}`,
+    `${count} file${count === 1 ? "" : "s"} in ${storeDir} already say${count === 1 ? "s" : ""} something else:\n  ${lines.join("\n  ")}`,
     "local-changes",
-    `Keep yours (leave it), or pass --force to replace ${conflicts.length === 1 ? "it" : "them"} with fastlane's: ship ${command} import --force`,
-    { files: conflicts },
+    extras.length
+      ? `Keep yours (leave them), or pass --force to make the folders match fastlane's, replacing and deleting these: ship ${command} import --force`
+      : `Keep yours (leave it), or pass --force to replace ${count === 1 ? "it" : "them"} with fastlane's: ship ${command} import --force`,
+    { files: conflicts, ...(extras.length ? { extra: extras } : {}) },
   );
 }
 
@@ -248,6 +264,14 @@ export function mergeStoreApp(existing: StoreApp, imported: StoreApp): { app: St
     const values = imported[section] as Record<string, unknown> | undefined;
     if (!values) continue;
     const current = { ...((existing[section] as Record<string, unknown> | undefined) ?? {}) };
+    // A new category's old subcategories don't belong to it (GAMES_PUZZLE under PRODUCTIVITY).
+    if (section === "categories") {
+      for (const [category, subcategories] of [["primary", "primarySubcategories"], ["secondary", "secondarySubcategories"]] as const) {
+        if (values[category] === undefined || values[category] === current[category] || values[subcategories] !== undefined || current[subcategories] === undefined) continue;
+        if (differs(current[subcategories], [])) replaced.push(`${section}.${subcategories}`);
+        delete current[subcategories];
+      }
+    }
     for (const [key, value] of Object.entries(values)) {
       if (differs(current[key], value)) replaced.push(`${section}.${key}`);
       current[key] = value;
@@ -282,12 +306,12 @@ export async function importMetadata(project: Project, options: { from: string; 
   }
   written.push(...writes.map(([path]) => path), ...(appChanged ? ["app.json"] : []));
   if (Object.keys(read.app).length && !appChanged) unchanged.push("app.json");
-  return { from: read.from, written: written.sort(), unchanged: unchanged.sort(), warnings: read.warnings, dryRun: Boolean(options.dryRun) };
+  return { from: read.from, written: written.sort(), unchanged: unchanged.sort(), removed: [], warnings: read.warnings, dryRun: Boolean(options.dryRun) };
 }
 
 /** Copies a fastlane screenshots folder into the store folder, one folder per display type. */
 export async function importScreenshots(project: Project, options: { from: string; force?: boolean; dryRun?: boolean }): Promise<ImportResult> {
-  const read = await readFastlaneScreenshots(options.from);
+  const read = await readFastlaneScreenshots(options.from, project.platform);
   const unchanged: string[] = [];
   const conflicts: string[] = [];
   const copies: { from: string; to: string }[] = [];
@@ -298,13 +322,26 @@ export async function importScreenshots(project: Project, options: { from: strin
     else if (options.force) copies.push(copy);
     else conflicts.push(copy.to);
   }
-  if (conflicts.length) throw conflictError(conflicts, project.storeDir, "screenshots");
+  // A folder the import fills holds fastlane's set: anything else in it (a pulled screenshot, one
+  // renumbered since the last import) would be pushed too, so it's a conflict, and --force deletes it.
+  const targets = new Set(read.copies.map((copy) => copy.to));
+  const extras: string[] = [];
+  for (const folder of new Set(read.copies.map((copy) => dirname(copy.to)))) {
+    const dir = join(project.storeDir, folder);
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir).sort(naturalCompare)) {
+      const path = `${folder}/${name}`;
+      if (SCREENSHOT_EXTENSIONS.includes(extname(name).toLowerCase()) && !targets.has(path)) extras.push(path);
+    }
+  }
+  if (conflicts.length || (extras.length && !options.force)) throw conflictError(conflicts, project.storeDir, "screenshots", options.force ? [] : extras);
   if (!options.dryRun) {
+    for (const path of extras) rmSync(join(project.storeDir, path));
     for (const copy of copies) {
       const target = join(project.storeDir, copy.to);
       mkdirSync(dirname(target), { recursive: true });
       copyFileSync(copy.from, target);
     }
   }
-  return { from: read.from, written: copies.map((copy) => copy.to).sort(), unchanged: unchanged.sort(), warnings: read.warnings, dryRun: Boolean(options.dryRun) };
+  return { from: read.from, written: copies.map((copy) => copy.to).sort(), unchanged: unchanged.sort(), removed: extras, warnings: read.warnings, dryRun: Boolean(options.dryRun) };
 }

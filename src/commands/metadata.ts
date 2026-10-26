@@ -230,9 +230,11 @@ async function importFastlane(project: Project, options: Options) {
 /** What an import wrote (or would), for people and --json. */
 export function printImport(result: ImportResult, store: string, command: "metadata" | "screenshots") {
   ui.result(result, () => {
-    if (!result.written.length) return console.log(`${store}/ already has everything from ${result.from}.`);
-    console.log(`${result.dryRun ? "Would write" : "Wrote"} ${result.written.length} file${result.written.length === 1 ? "" : "s"} to ${store}/:`);
+    if (!result.written.length && !result.removed.length) return console.log(`${store}/ already has everything from ${result.from}.`);
+    if (result.written.length) console.log(`${result.dryRun ? "Would write" : "Wrote"} ${result.written.length} file${result.written.length === 1 ? "" : "s"} to ${store}/:`);
     for (const path of result.written) console.log(`  ${path}`);
+    if (result.removed.length) console.log(`${result.dryRun ? "Would delete" : "Deleted"}, since fastlane doesn't have ${result.removed.length === 1 ? "it" : "them"}:`);
+    for (const path of result.removed) console.log(`  ${path}`);
     if (!result.dryRun) console.log(`\nCheck them with \`ship ${command} validate\`, compare with App Store Connect with \`ship ${command} diff\`, and commit.`);
   });
 }

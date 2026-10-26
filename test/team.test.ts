@@ -10,10 +10,10 @@ import { type Context, findCommand, parseFlags } from "../src/command";
 import { commands } from "../src/commands";
 import { checkUdid, findDevice, parseDevicePlatform } from "../src/commands/devices";
 import { findTesters, parseRenewal } from "../src/commands/sandbox";
-import { findMember, parseRole } from "../src/commands/users";
+import { findMember, inviteAppId, parseRole } from "../src/commands/users";
 import { appsPath } from "../src/config";
 import { useCredentials } from "../src/credentials";
-import { categoryId, mergeStoreApp, readFastlaneMetadata, screenshotTypeFor } from "../src/store/fastlane";
+import { categoryId, importedName, mergeStoreApp, readFastlaneMetadata, screenshotTypeFor } from "../src/store/fastlane";
 import { ShipError, ui } from "../src/ui";
 import { captureLog, jsonApi, mockAsc, noRetryDelay, resource, temp, testCredentials } from "./helpers";
 
@@ -85,6 +85,23 @@ describe("ship users", () => {
     expect(await rejected(() => findMember(members, "bob@example.com"))).toMatchObject({ code: "no-user", exitCode: 4 });
   });
 
+  test("--apps takes an id, an app set up here, or any of the team's apps by bundle id", async () => {
+    setup();
+    mock = mockAsc((call) =>
+      call.path === "/v1/apps" && call.query["filter[bundleId]"] === "com.example.other"
+        ? { json: jsonApi([resource("apps", "999", { name: "Other", bundleId: "com.example.other" })]) }
+        : call.path === "/v1/apps"
+          ? { json: jsonApi([]) }
+          : undefined,
+    );
+    expect(await inviteAppId("555")).toBe("555");
+    expect(await inviteAppId("Lift")).toBe(APP);
+    expect(await inviteAppId("com.example.lift")).toBe(APP);
+    expect(await inviteAppId("com.example.other")).toBe("999");
+    expect(await rejected(() => inviteAppId("com.example.nope"))).toMatchObject({ code: "no-asc-app", exitCode: 4 });
+    expect((await rejected(() => inviteAppId("Nope"))).code).toBe("unknown-app");
+  });
+
   test("an invitation to some apps names them; to every app it doesn't", () => {
     const base = { email: "b@example.com", firstName: "B", lastName: "C", roles: ["DEVELOPER"], provisioningAllowed: true };
     expect(invitationBody({ ...base, allAppsVisible: false, visibleApps: [APP] }).data).toEqual({
@@ -116,6 +133,19 @@ describe("ship users", () => {
     expect(writes(mock.calls)).toEqual([]);
     const invited = await ship(["users", "invite", "new@example.com", "--first", "New", "--last", "Person", "--role", "developer", "--role", "marketing"]);
     expect(invited.invitation).toMatchObject({ id: "i2", email: "new@example.com", invited: true, roles: ["DEVELOPER", "MARKETING"] });
+    await ship(["users", "invite", "only@example.com", "--first", "O", "--last", "N", "--role", "developer", "--apps", "Lift", "--apps", APP, "--provisioning"]);
+    expect(mock.calls.at(-1)!.body).toEqual({
+      data: {
+        type: "userInvitations",
+        attributes: { email: "only@example.com", firstName: "O", lastName: "N", roles: ["DEVELOPER"], allAppsVisible: false, provisioningAllowed: true },
+        relationships: { visibleApps: { data: [{ type: "apps", id: APP }] } },
+      },
+    });
+    // The global --app picks a repo; it would look like it limits the invitation, so it's an error without --apps.
+    const before = mock.calls.length;
+    expect((await rejected(() => ship(["users", "invite", "x@example.com", "--first", "X", "--last", "Y", "--role", "developer", "--app", "Lift"]))).message).toBe("--app doesn't limit an invitation");
+    expect(mock.calls).toHaveLength(before);
+    expect((await ship(["users", "invite", "y@example.com", "--first", "Y", "--last", "Z", "--role", "developer", "--app", "Lift", "--all-apps", "--dry-run"])).invitation.allAppsVisible).toBe(true);
     expect((await rejected(() => ship(["users", "invite", "bo@example.com", "--first", "B", "--last", "O", "--role", "admin"])))).toMatchObject({ code: "user-exists", exitCode: 5 });
     expect((await rejected(() => ship(["users", "invite", "x@example.com", "--first", "X", "--last", "Y"])))).toMatchObject({ message: "Which role? Pass --role" });
 
@@ -180,6 +210,12 @@ describe("ship devices", () => {
     expect(await rejected(() => ship(["devices", "add", UDID, "--name", "Again"]))).toMatchObject({ code: "device-exists", exitCode: 5 });
 
     expect((await ship(["devices", "rename", "Ada's iPhone", "Ada's old iPhone"])).device.name).toBe("Ada's old iPhone");
+    expect(mock.calls.at(-1)!.body).toEqual({ data: { type: "devices", id: "d1", attributes: { name: "Ada's old iPhone" } } });
+    const patches = writes(mock.calls).length;
+    expect(await ship(["devices", "enable", UDID])).toMatchObject({ unchanged: true, device: { status: "ENABLED" } });
+    expect(writes(mock.calls)).toHaveLength(patches);
+    await ship(["devices", "add", "12345678-1234-1234-1234-123456789ABC", "--name", "Old Mac"]);
+    expect((mock.calls.at(-1)!.body as any).data.attributes.platform).toBe("MAC_OS");
     expect((await ship(["devices", "disable", UDID])).device.status).toBe("DISABLED");
     expect(mock.calls.at(-1)!.body).toEqual({ data: { type: "devices", id: "d1", attributes: { status: "DISABLED" } } });
 
@@ -228,6 +264,9 @@ describe("ship sandbox", () => {
     const set = await ship(["sandbox", "set", "a@sandbox.test", "--territory", "gbr", "--interrupt", "--renewal", "3m"]);
     expect(set.changes).toEqual({ territory: "GBR", interruptPurchases: true, subscriptionRenewalRate: "MONTHLY_RENEWAL_EVERY_THREE_MINUTES" });
     expect(mock.calls.at(-1)).toMatchObject({ method: "PATCH", path: "/v2/sandboxTesters/s1" });
+    expect(mock.calls.at(-1)!.body).toEqual({
+      data: { type: "sandboxTesters", id: "s1", attributes: { territory: "GBR", interruptPurchases: true, subscriptionRenewalRate: "MONTHLY_RENEWAL_EVERY_THREE_MINUTES" } },
+    });
     expect((await rejected(() => ship(["sandbox", "set", "a@sandbox.test"]))).message).toBe("Nothing to set");
     expect((await rejected(() => ship(["sandbox", "set", "a@sandbox.test", "--interrupt", "--no-interrupt"]))).code).toBe("usage");
   });
@@ -291,6 +330,11 @@ describe("fastlane import", () => {
     expect(screenshotTypeFor(1179, 2556)).toBe("APP_IPHONE_61");
     expect(screenshotTypeFor(1179, 2556, "x_APP_IPHONE_58_1.png")).toBe("APP_IPHONE_58");
     expect(screenshotTypeFor(100, 100)).toBeUndefined();
+    // 3840x2160 is both Apple TV and Vision Pro: the app's platform decides.
+    expect(screenshotTypeFor(3840, 2160)).toBe("APP_APPLE_TV");
+    expect(screenshotTypeFor(3840, 2160, "", "visionos")).toBe("APP_APPLE_VISION_PRO");
+    expect(importedName("1.png")).toBe("screenshot.png");
+    expect(importedName("02_Home Screen.PNG")).toBe("home-screen.png");
   });
 
   test("reads the text, categories, and review details, and says what it left", async () => {
@@ -333,6 +377,10 @@ describe("fastlane import", () => {
       release: { phased: true },
     });
     expect(replaced).toEqual(["copyright"]);
+    // A new primary category drops the old one's subcategories (and says so).
+    const games = mergeStoreApp({ categories: { primary: "GAMES", primarySubcategories: ["GAMES_PUZZLE"] } }, { categories: { primary: "PRODUCTIVITY" } });
+    expect(games.app.categories).toEqual({ primary: "PRODUCTIVITY" });
+    expect(games.replaced).toEqual(["categories.primarySubcategories", "categories.primary"]);
   });
 
   test("ship metadata import writes the store folder, and won't overwrite without --force", async () => {
@@ -384,5 +432,25 @@ describe("fastlane import", () => {
     writeFileSync(join(root, "appstore", "de-DE", "screenshots", "APP_IPAD_PRO_3GEN_129", "01-ipad-pro.png"), png(2064, 2752, 9));
     expect((await rejected(() => ship(["screenshots", "import"]))).code).toBe("local-changes");
     expect((await rejected(() => ship(["screenshots", "import", "--type", "APP_IPHONE_67"]))).code).toBe("usage");
+  });
+
+  test("another image in a folder the import fills is a conflict, and --force deletes it", async () => {
+    const root = setup();
+    fastlaneFolder(root);
+    await ship(["screenshots", "import"]);
+    const folder = join(root, "appstore", "en-US", "screenshots", "APP_IPHONE_67");
+    writeFileSync(join(folder, "01-home.png"), png(1320, 2868, 5));
+    const error = await rejected(() => ship(["screenshots", "import"]));
+    expect(error).toMatchObject({ code: "local-changes", details: { files: [], extra: ["en-US/screenshots/APP_IPHONE_67/01-home.png"] } });
+    expect(error.message).toContain("01-home.png (fastlane doesn't have it)");
+    const dry = await ship(["screenshots", "import", "--force", "--dry-run"]);
+    expect(dry.removed).toEqual(["en-US/screenshots/APP_IPHONE_67/01-home.png"]);
+    expect(existsSync(join(folder, "01-home.png"))).toBe(true);
+    expect((await ship(["screenshots", "import", "--force"])).removed).toEqual(["en-US/screenshots/APP_IPHONE_67/01-home.png"]);
+    expect(existsSync(join(folder, "01-home.png"))).toBe(false);
+    // Folders the import doesn't fill are left alone.
+    mkdirSync(join(root, "appstore", "en-US", "screenshots", "APP_IPAD_PRO_3GEN_11"), { recursive: true });
+    writeFileSync(join(root, "appstore", "en-US", "screenshots", "APP_IPAD_PRO_3GEN_11", "01-ipad.png"), png(1668, 2420));
+    expect((await ship(["screenshots", "import"])).removed).toEqual([]);
   });
 });

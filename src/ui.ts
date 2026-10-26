@@ -48,7 +48,7 @@ const EXIT_BY_CODE: Record<string, number> = {
     ].map((code) => [code, EXIT.notFound]),
   ),
   ...Object.fromEntries(
-    ["api-409", "build-in-use", "group-exists", "user-exists", "device-exists", "submission-in-progress", "version-in-flight", "version-in-progress"].map((code) => [code, EXIT.conflict]),
+    ["api-409", "build-in-use", "group-exists", "user-exists", "device-exists", "account-holder", "submission-in-progress", "version-in-flight", "version-in-progress"].map((code) => [code, EXIT.conflict]),
   ),
   "read-only": EXIT.readOnly,
   ...Object.fromEntries(["processing-timeout", "still-pending"].map((code) => [code, EXIT.pending])),

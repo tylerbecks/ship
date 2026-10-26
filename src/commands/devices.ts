@@ -95,7 +95,9 @@ async function devices(ctx: Context) {
     if (existing) {
       throw new ShipError(`${udid} is already registered as "${existing.name}"`, "device-exists", existing.status === "DISABLED" ? `Turn it back on: ship devices enable ${udid}` : `Rename it: ship devices rename ${udid} "${name}"`, { device: existing });
     }
-    const device = { name, udid, platform: platform ?? "IOS" };
+    // Only an Intel Mac's UDID is a full UUID; every other device's is 40 hex digits or the 8-16 form.
+    const isMacUuid = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(udid);
+    const device = { name, udid, platform: platform ?? (isMacUuid ? ("MAC_OS" as const) : ("IOS" as const)) };
     if (dryRun) return ui.result({ device, dryRun }, () => console.log(`Would register ${name} (${udid}).`));
     const added = await registerDevice(device);
     ui.ok(`Registered ${name}`);
@@ -105,6 +107,9 @@ async function devices(ctx: Context) {
   const device = findDevice(await listDevices(), given[0]!);
   const changes = action === "rename" ? { name: given[1]!.trim() } : { status: action === "disable" ? ("DISABLED" as const) : ("ENABLED" as const) };
   if (action === "rename" && !changes.name) throw usage("The new name can't be empty", `ship devices rename "${device.name}" "Ada's iPhone"`);
+  if ("status" in changes && device.status === changes.status) {
+    return ui.result({ device, dryRun, unchanged: true }, () => console.log(`${device.name} is already ${device.status.toLowerCase()}.`));
+  }
   const what = action === "rename" ? `rename ${device.name} to ${changes.name}` : `${action} ${device.name}`;
   if (dryRun) return ui.result({ device: { ...device, ...changes }, dryRun }, () => console.log(`Would ${what}.`));
   const updated = (await updateDevice(device.id, changes)) ?? { ...device, ...changes };
