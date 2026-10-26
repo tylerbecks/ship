@@ -1,0 +1,17 @@
+{
+  "description": "Typecheck and test what changed before ending a turn. See bin/agent-hook.ts.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)\"/bin/agent-hook.ts stop",
+            "timeout": 180,
+            "statusMessage": "Checking the changes"
+          }
+        ]
+      }
+    ]
+  }
+}

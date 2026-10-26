@@ -9,8 +9,10 @@
     "dev": "bun src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test",
     "build": "bun build src/cli.ts --compile --outfile dist/ship",
-    "install-local": "bun run build && mkdir -p ~/.local/bin && rm -f ~/.local/bin/ship && cp dist/ship ~/.local/bin/ship && codesign --force --sign - ~/.local/bin/ship && echo 'installed ~/.local/bin/ship'"
+    "install-local": "bun run build && mkdir -p ~/.local/bin && rm -f ~/.local/bin/ship && cp dist/ship ~/.local/bin/ship && codesign --force --sign - ~/.local/bin/ship && echo 'installed ~/.local/bin/ship'",
+    "papercuts": "bun bin/papercuts.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
