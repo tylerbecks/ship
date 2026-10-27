@@ -1,6 +1,6 @@
 # Agent notes
 
-`ship` is a TypeScript CLI on Bun, compiled to one binary. Read README.md first.
+`ship` is a TypeScript CLI on Bun, compiled to one binary. Read README.md first; the guides in docs/ document each command group.
 
 ## Layout
 
