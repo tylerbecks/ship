@@ -47,6 +47,7 @@ import { type AppStoreVersion, LIVE_VERSION_STATES, appInfos, appStoreVersions, 
 import { checkBuildNumber } from "../build";
 import { type Command, type Context, boolFlag, checkActionFlags, checkArgs, flagHint, stringFlag } from "../command";
 import { type Project, loadProject } from "../config";
+import { type Tagging, buildCommits, fetchBuildTags, headCommit, tagCommit, tagFor } from "../git";
 import { type AscPlatform, fromAscPlatform, parsePlatform, platformInfo } from "../platform";
 import { type PushResult, type StoreApp, readStoreApp } from "../store/files";
 import { pushMedia } from "../store/media";
@@ -67,7 +68,8 @@ ship release phased pause|resume|complete [--version <x.y>] [--dry-run]
 Ships a version to the App Store:
   prepare  creates the version (or reuses the one being prepared), attaches
            the build, and sets how it's released
-  submit   prepares, checks that nothing's missing, and submits it for review
+  submit   prepares, checks that nothing's missing, submits it for review, and
+           tags the build's commit appstore/<version>
   status   shows review and release progress (also plain \`ship release\`)
   go       releases a version that's approved and waiting for you
   cancel   takes a submission out of review
@@ -469,6 +471,8 @@ export interface SubmitResult extends PrepareResult {
   submission: { id: string; state: string; submittedDate: string | null } | null;
   submitted: boolean;
   alreadyInReview: boolean;
+  /** The appstore/<version> tag on the submitted build's commit, once submitted. */
+  tag?: Tagging;
 }
 
 /** Everything the pre-submission checks read, after the version is prepared. */
@@ -592,6 +596,26 @@ export async function submit(project: Project, options: ReleaseOptions): Promise
   ui.ok(`Submitted ${versionString} for review`);
   result.steps.push(`Submitted ${versionString} for review`);
   return { ...result, checks, checksRun, checksBeforePush: false, submission: submissionJSON(sent), submitted: true, alreadyInReview: false };
+}
+
+/**
+ * Tags the submitted build's commit appstore/<version> and pushes it, so the
+ * repo records what went to App Review. Needs the build's testflight/<build>
+ * tag; a version that's already tagged is left alone.
+ */
+async function tagRelease(project: Project, result: SubmitResult): Promise<Tagging | null> {
+  if (!result.submitted || !result.build || !(await headCommit(project.root))) return null;
+  await fetchBuildTags(project.root);
+  const sha = (await buildCommits(project.root)).get(result.build.number);
+  if (!sha) {
+    ui.note(`No ${tagFor(result.build.number)} tag, so ${result.version} isn't tagged in git`);
+    return null;
+  }
+  const message = `${project.config.name} ${result.version} (${result.build.number}), submitted for App Review`;
+  const tagging = await tagCommit(project.root, `appstore/${result.version}`, sha, message);
+  for (const warning of tagging.warnings) ui.warn(warning);
+  if (!tagging.warnings.length) ui.ok(`Tagged ${sha.slice(0, 7)} as ${tagging.tag} and pushed it`);
+  return tagging;
 }
 
 // MARK: status
@@ -1016,6 +1040,8 @@ async function release(ctx: Context) {
         throw error;
       }
       if (junit) await writeJUnit(junit, checksSuite("ship release submit", result.checks));
+      const tag = await tagRelease(project, result);
+      if (tag) result = { ...result, tag };
       const review = options.wait && !result.dryRun ? await waitForReview(project, { ...options, version: result.version }) : undefined;
       ui.result(review ? { ...result, review } : result, () => {
         if (result.alreadyInReview) {

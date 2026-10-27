@@ -1,25 +1,41 @@
 // ship beta and ship distribute: archive, upload, and send a build to TestFlight.
 
 import { join, relative } from "node:path";
-import { type Build, findBuild, highestBuildNumber, listBuilds, setExemptEncryption } from "../asc/builds";
+import { type Build, findBuild, listBuilds, numberingBuilds, setExemptEncryption } from "../asc/builds";
 import { assertWritable } from "../asc/client";
 import { addBuildToGroup, betaGroups, setWhatToTest, submitForBetaReview } from "../asc/testflight";
 import { archive, buildPaths, checkBuildNumber, checkInfo, exportIPA, packageInfo, upload, withKeyFile } from "../build";
+import { type NextBuild, compareBuildOrder, isCounter, nextBuildNumber } from "../buildnumber";
 import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
-import { type Commit, type Tagging, commitSetting, drift, headCommit, tagBuild, tagFor } from "../git";
+import {
+  type Commit,
+  type Tagging,
+  buildCommits,
+  buildTagMessage,
+  claimBuild,
+  commitSetting,
+  drift,
+  fetchBuildTags,
+  hasOrigin,
+  headCommit,
+  releaseClaim,
+  tagBuild,
+  tagFor,
+} from "../git";
 import { type Command, boolFlag, checkArgs, stringFlag } from "../command";
 import { checkNotesStdin, whatToTest } from "../notes";
 import { type AscPlatform, platformInfo } from "../platform";
 import { ShipError, ui } from "../ui";
 import { describeDuration, waitFor } from "../wait";
-import { appSettings, packageSettings } from "../xcode";
+import { projectVersion } from "../version";
 import { appId, friendly } from "./status";
 
 export const betaHelp = `ship beta [--notes <text>] [--notes-file <path>] [--notes-from-git] [--external] [--build <n>] [--no-wait] [--dry-run] [--allow-dirty]
 
 Ships a TestFlight build in one go:
-  1. picks the next build number (one above the highest in App Store Connect)
+  1. picks the next build number: one counter per app that never resets,
+     like 1.0.1 (10), then 1.1 (11)
   2. archives a Release build and exports an App Store Connect .ipa
   3. checks the bundle id, build number, and export compliance key
   4. uploads it, waits for processing, and answers export compliance
@@ -27,8 +43,14 @@ Ships a TestFlight build in one go:
   6. with --external, adds it to the external groups and submits it to
      Beta App Review (needed before the public link works)
 
-It ships only committed code: it tags the commit testflight/<build> and
-pushes the tag, so \`ship status\` and git know what each build contains.
+It ships only committed code: before archiving, it tags the commit
+testflight/<build> and pushes the tag, which claims the number (another
+machine picks the next one) and tells \`ship status\` and git what each
+build contains. A failed archive or upload gives the number back.
+
+A number of 100,000 or more (like a timestamp) never feeds the counter. A
+version that already has one keeps counting above it, with a warning;
+\`ship version bump patch\` starts the short numbers.
 
 Safe to re-run: a build that's already uploaded isn't uploaded again; use
 \`ship distribute <build>\` to redo only steps 4 to 6.
@@ -64,13 +86,14 @@ export async function beta(options: BetaOptions) {
   const id = await appId(project);
 
   ui.step("Picking the build number");
-  // App Store Connect is the source of truth; the project's own number only
-  // matters before the first upload. (A failed run may have already bumped it.)
-  const highest = await highestBuildNumber(id);
-  const build = options.build ?? String(highest > 0 ? highest + 1 : ((await localBuild(project)) ?? 0) + 1);
   const platform = platformInfo(project.platform);
-  const existing = await findBuild(id, build, platform.asc);
+  const local = await localVersion(project);
   const commit = await headCommit(project.root);
+  // Claims from other machines and worktrees count, so fetch them first.
+  if (commit) await fetchBuildTags(project.root);
+  const picked = await pickBuild(project, id, { requested: options.build, version: local.version, local: local.build, head: commit && !commit.changes.length ? commit.sha : undefined });
+  let build = picked.build;
+  const existing = picked.existing;
   // A build that's already uploaded may not be HEAD, so only a new upload is tagged. An App
   // Playground's archive still rewrites Package.swift's bundleVersion after this snapshot; that line
   // is the build number the tag is named for, like CURRENT_PROJECT_VERSION for Xcode projects.
@@ -81,6 +104,8 @@ export async function beta(options: BetaOptions) {
     app: project.config.name,
     bundleId: project.config.bundleId,
     build,
+    version: existing?.version ?? local.version ?? null,
+    numbering: picked.numbering,
     upload: !existing,
     external: Boolean(options.external),
     notes: notes.text,
@@ -91,11 +116,13 @@ export async function beta(options: BetaOptions) {
     tag: tagged ? tagFor(build) : null,
     platform: project.platform,
   };
-  ui.ok(`Build ${build}${existing ? " (already uploaded; skipping to distribution)" : ""}`);
+  const label = (number: string) => (plan.version ? `${plan.version} (${number})` : `build ${number}`);
+  ui.ok(`Build ${plan.version ? label(build) : build}${existing ? " (already uploaded; skipping to distribution)" : picked.reclaimed ? " (claimed by an earlier run of this commit)" : ""}`);
+  if (picked.floor) ui.warn(legacyWarning(project, picked.floor, build, plan.version));
 
   if (options.dryRun) {
     ui.result({ dryRun: true, plan }, () => {
-      console.log(`Would ${existing ? "distribute" : "archive, upload, and distribute"} ${project.config.name} build ${build}.`);
+      console.log(`Would ${existing ? "distribute" : "archive, upload, and distribute"} ${project.config.name} ${label(build)}.`);
       console.log(`Internal groups: yes. External groups and Beta App Review: ${options.external ? "yes" : "no"}.`);
       if (plan.tag) console.log(`Would tag ${commit!.short} as ${plan.tag}.`);
       if (plan.notes) console.log(`What to Test:\n${indent(plan.notes)}`);
@@ -107,43 +134,65 @@ export async function beta(options: BetaOptions) {
 
   let tag: Tagging | null = null;
   if (!existing) {
-    await withKeyFile(creds, async (key) => {
-      ui.step(`Archiving ${project.config.scheme} (Release, build ${build})`);
-      await archive(project, build, creds, key, commit && commitSetting(commit));
-      ui.ok("Archived");
-      ui.step(`Exporting the App Store Connect ${platform.package}`);
-      const ipa = await exportIPA(project, build, creds, key);
-      ui.ok(`Exported ${ipa}`);
+    let claim: Tagging | null = null;
+    if (tagged) {
+      const message = (number: string) =>
+        buildTagMessage({
+          app: project.config.name,
+          bundleId: project.config.bundleId,
+          version: plan.version ?? undefined,
+          build: number,
+          platform: project.platform,
+          platformTitle: platform.title,
+          branch: commit.branch,
+        });
+      ({ build, claim } = await claimNumber(project, build, commit, message, Boolean(options.build)));
+      plan.build = build;
+      plan.tag = claim.tag;
+    }
+    try {
+      await withKeyFile(creds, async (key) => {
+        ui.step(`Archiving ${project.config.scheme} (Release, build ${build})`);
+        await archive(project, build, creds, key, commit && commitSetting(commit));
+        ui.ok("Archived");
+        ui.step(`Exporting the App Store Connect ${platform.package}`);
+        const ipa = await exportIPA(project, build, creds, key);
+        ui.ok(`Exported ${ipa}`);
 
-      const checks = checkInfo(await packageInfo(ipa, buildPaths(project, build).archive), { bundleId: project.config.bundleId, build });
-      for (const check of checks) (check.ok ? ui.ok : ui.warn).call(ui, check.message);
-      const blocking = checks.slice(0, 2).filter((c) => !c.ok);
-      if (blocking.length) {
-        throw new ShipError("The built app doesn't match what ship expected", "bad-build", blocking.map((c) => c.message).join("\n  "));
-      }
-      // The archive read the checkout over several minutes; another session committing or editing in
-      // it meanwhile would make the tag name a commit the build doesn't match.
-      if (tagged) {
-        const changed = drift(commit, await headCommit(project.root), await rewrittenPaths(project));
-        if (changed) {
-          throw new ShipError(
-            `The checkout changed while archiving (${changed})`,
-            "checkout-changed",
-            "Nothing was uploaded. Once those changes are committed or gone, run ship beta again.",
-          );
+        const checks = checkInfo(await packageInfo(ipa, buildPaths(project, build).archive), { bundleId: project.config.bundleId, build });
+        for (const check of checks) (check.ok ? ui.ok : ui.warn).call(ui, check.message);
+        const blocking = checks.slice(0, 2).filter((c) => !c.ok);
+        if (blocking.length) {
+          throw new ShipError("The built app doesn't match what ship expected", "bad-build", blocking.map((c) => c.message).join("\n  "));
         }
-      }
+        // The archive read the checkout over several minutes; another session committing or editing in
+        // it meanwhile would make the tag name a commit the build doesn't match.
+        if (tagged) {
+          const changed = drift(commit, await headCommit(project.root), await rewrittenPaths(project));
+          if (changed) {
+            throw new ShipError(
+              `The checkout changed while archiving (${changed})`,
+              "checkout-changed",
+              "Nothing was uploaded. Once those changes are committed or gone, run ship beta again.",
+            );
+          }
+        }
 
-      ui.step("Uploading to App Store Connect");
-      await upload(project, build, ipa, creds, key!);
-      ui.ok("Uploaded");
-    });
-    if (tagged) tag = await tagCommit(project, build, commit);
+        ui.step("Uploading to App Store Connect");
+        await upload(project, build, ipa, creds, key!);
+        ui.ok("Uploaded");
+      });
+    } catch (error) {
+      if (claim) await releaseClaim(project.root, claim);
+      throw error;
+    }
+    // A claim that couldn't be pushed gets another try now the build is uploaded.
+    if (claim && tagged) tag = claim.pushed || !(await hasOrigin(project.root)) ? claim : await tagCommit(project, build, commit);
   }
 
   if (options.wait === false) {
     ui.result({ plan, tag, uploaded: true, distributed: false }, () => {
-      console.log(`Uploaded build ${build}. When it's processed, run: ship distribute ${build}${options.external ? " --external" : ""}`);
+      console.log(`Uploaded ${label(build)}. When it's processed, run: ship distribute ${build}${options.external ? " --external" : ""}`);
     });
     return;
   }
@@ -186,6 +235,83 @@ export function checkCommit(commit: Commit | undefined, allowDirty: boolean) {
   }
   if (commit.defaultBranch && !commit.onDefaultBranch) {
     ui.warn(`${commit.short} (${commit.branch ?? "detached HEAD"}) isn't on ${commit.defaultBranch} yet`);
+  }
+}
+
+/** How the next build number was picked. */
+interface Picked extends NextBuild {
+  /** The build App Store Connect already has under that number (from --build, or HEAD's tag). */
+  existing?: Build;
+  /** Whether the number is HEAD's claim from a run that didn't upload. */
+  reclaimed?: boolean;
+}
+
+/**
+ * The build number to ship: --build as given; HEAD's own claim from a run
+ * that didn't finish (or its upload, when App Store Connect has it and it
+ * didn't fail); otherwise the next number (see buildnumber.ts).
+ */
+async function pickBuild(
+  project: Project,
+  id: string,
+  options: { requested?: string; version?: string; local?: string; head?: string },
+): Promise<Picked> {
+  const platform = platformInfo(project.platform).asc;
+  const numbering = (build: string) => (isCounter(build) ? "counter" : "legacy");
+  if (options.requested) {
+    const existing = await findBuild(id, options.requested, platform, options.version);
+    return { build: options.requested, numbering: numbering(options.requested), existing };
+  }
+  const tags = await buildCommits(project.root);
+  const atHead = options.head
+    ? [...tags]
+        .filter(([, sha]) => sha === options.head)
+        .map(([build]) => build)
+        .sort(compareBuildOrder)
+        .at(-1)
+    : undefined;
+  if (atHead) {
+    const found = await findBuild(id, atHead, platform, options.version);
+    if (!found) return { build: atHead, numbering: numbering(atHead), reclaimed: true };
+    // A build that failed processing used up its number.
+    if (found.processingState !== "FAILED" && found.processingState !== "INVALID") return { build: atHead, numbering: numbering(atHead), existing: found };
+  }
+  const { builds, train } = await numberingBuilds(id, platform, options.version);
+  return nextBuildNumber({ builds, train, tags: [...tags.keys()], local: options.local });
+}
+
+/** Why the number is still a big one, and how to get short ones. */
+function legacyWarning(project: Project, floor: string, build: string, version: string | null): string {
+  if (project.platform === "macos") {
+    return `macOS build numbers have to keep rising, and this app already has build ${floor}, so this one is ${build}`;
+  }
+  return `${version ?? "This version"} already has build ${floor}, so this one is ${build}. \`ship version bump patch\` starts short build numbers in the next version`;
+}
+
+/**
+ * Claims `build` with HEAD's testflight/<build> tag, moving to the next
+ * number while another commit has it (up to 3 tries). A --build number that's
+ * taken fails instead.
+ */
+async function claimNumber(project: Project, build: string, commit: Commit, message: (build: string) => string, requested: boolean): Promise<{ build: string; claim: Tagging }> {
+  for (let attempt = 1; ; attempt++) {
+    const claim = await claimBuild(project.root, build, commit.sha, message(build));
+    if (!claim.taken) {
+      for (const warning of claim.warnings) ui.warn(warning);
+      if (!claim.warnings.length) ui.ok(`Tagged ${commit.short} as ${claim.tag} and pushed it`);
+      return { build, claim };
+    }
+    if (requested || attempt === 3) {
+      throw new ShipError(
+        `Build ${build} is already claimed: ${claim.tag} points at ${claim.by.slice(0, 7)}`,
+        "build-taken",
+        requested ? "Pass another --build, or leave it out and ship picks the next free number." : "Other uploads keep taking the next numbers. Run ship beta again.",
+        { build, tag: claim.tag, commit: claim.by },
+      );
+    }
+    const next = String(Number.parseInt(build, 10) + 1);
+    ui.note(`${claim.tag} is taken by ${claim.by.slice(0, 7)}; trying ${next}`);
+    build = next;
   }
 }
 
@@ -326,27 +452,23 @@ export async function waitForProcessing(
 }
 
 function printDistribution(project: Project, build: string, result: Distribution) {
-  console.log(`${project.config.name} build ${build}: ${friendly(result.build.internalState) || "processed"}.`);
+  const name = result.build.version ? `${result.build.version} (${build})` : `build ${build}`;
+  console.log(`${project.config.name} ${name}: ${friendly(result.build.internalState) || "processed"}.`);
   if (result.groups.length) console.log(`Groups: ${result.groups.join(", ")}`);
   if (result.submittedForReview) console.log("Waiting for Beta App Review; external testers get it once approved.");
   for (const link of result.publicLinks) console.log(`Public link: ${link}`);
   for (const note of result.notes) console.log(note);
 }
 
-/** The build number the project itself says, if it says one. */
-async function localBuild(project: Project): Promise<number | undefined> {
+/** The version and build number the project itself says, if it says them. */
+async function localVersion(project: Project): Promise<{ version?: string; build?: string }> {
   try {
-    const value =
-      project.config.kind === "swiftpm"
-        ? (await packageSettings(project.projectPath)).build
-        : (await appSettings({ kind: project.config.kind, path: project.projectPath }, project.config.scheme, project.platform)).build;
-    const number = Number.parseInt(value ?? "", 10);
-    return Number.isFinite(number) ? number : undefined;
+    const { version, build } = await projectVersion(project);
+    return { version, build };
   } catch {
-    return undefined;
+    return {};
   }
 }
-
 
 const optionalBuild = (value: string | undefined) => (value === undefined ? undefined : checkBuildNumber(value));
 

@@ -1,13 +1,14 @@
 // "What to Test" for a TestFlight build: from --notes, a file, and the commit
 // subjects since the previous build.
 //
-// The previous build is the newest testflight/<build> tag (see git.ts) whose
-// commit is in the one being shipped, so the notes list what's new since
-// testers last got a build. Subjects are cleaned of emoji, conventional-commit
+// The previous build is the testflight/<build> tag (see git.ts) closest
+// behind the commit being shipped, so the notes list what's new since testers
+// last got a build. Subjects are cleaned of emoji, conventional-commit
 // prefixes, and PR numbers, and chores are left out.
 
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { compareBuildOrder } from "./buildnumber";
 import type { Project } from "./config";
 import { buildCommits, git, headCommit, tagFor } from "./git";
 import { chars } from "./store/check";
@@ -18,32 +19,32 @@ export const WHATS_NEW_LIMIT = 4000;
 
 // MARK: Commits since the previous build
 
-/** Compares build numbers like 9, 10, and 1.2.3 numerically, part by part. */
-export function compareBuildNumbers(a: string, b: string): number {
-  const left = a.split(".").map(Number);
-  const right = b.split(".").map(Number);
-  for (let i = 0; i < Math.max(left.length, right.length); i++) {
-    const difference = (left[i] ?? 0) - (right[i] ?? 0);
-    if (Number.isNaN(difference)) return a.localeCompare(b);
-    if (difference) return difference;
-  }
-  return 0;
-}
-
 /**
  * The newest build already in TestFlight that `headSha` builds on: the
- * highest build number whose tagged commit is an ancestor of `headSha` and
- * isn't `headSha` itself. `below` leaves out that build and higher ones (for
- * redistributing an older build).
+ * tagged build whose commit is closest to `headSha` among its ancestors
+ * (`headSha` itself left out). Builds on the same commit go by build order,
+ * so a counter comes after a timestamp-style number. `below` leaves out that
+ * build and later ones (for redistributing an older build).
  */
 export async function previousBuild(root: string, headSha: string, options: { below?: string } = {}): Promise<{ build: string; commit: string } | undefined> {
-  const candidates = [...(await buildCommits(root))]
-    .filter(([build, commit]) => commit !== headSha && (options.below === undefined || compareBuildNumbers(build, options.below) < 0))
-    .sort(([a], [b]) => compareBuildNumbers(b, a));
+  const builds = await buildCommits(root);
+  const merged = await git(root, ["for-each-ref", "--merged", headSha, "--format=%(refname:strip=3)", "refs/tags/testflight/"]);
+  if (merged.code !== 0) return undefined;
+  const ancestors = new Set(merged.stdout.split("\n").filter(Boolean));
+  const candidates = [...builds].filter(
+    ([build, commit]) => ancestors.has(build) && commit !== headSha && (options.below === undefined || compareBuildOrder(build, options.below) < 0),
+  );
+  let best: { build: string; commit: string; distance: number } | undefined;
+  const distances = new Map<string, number>();
   for (const [build, commit] of candidates) {
-    if ((await git(root, ["merge-base", "--is-ancestor", commit, headSha])).code === 0) return { build, commit };
+    if (!distances.has(commit)) {
+      const count = await git(root, ["rev-list", "--count", `${commit}..${headSha}`]);
+      distances.set(commit, count.code === 0 ? Number(count.stdout.trim()) : Number.POSITIVE_INFINITY);
+    }
+    const distance = distances.get(commit)!;
+    if (!best || distance < best.distance || (distance === best.distance && compareBuildOrder(build, best.build) > 0)) best = { build, commit, distance };
   }
-  return undefined;
+  return best && { build: best.build, commit: best.commit };
 }
 
 /** How many commits to look at when there's no previous build. */

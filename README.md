@@ -62,22 +62,36 @@ ship builds iOS, macOS, tvOS, and visionOS apps. `ship init` detects the platfor
 
 ## How `ship beta` works
 
-1. Picks the build number: one above the highest in App Store Connect (or `--build`), and checks that there are no uncommitted changes.
+1. Picks the build number (see [Build numbers](#build-numbers-and-products)) or takes `--build`, checks that there are no uncommitted changes, and claims the number by tagging the commit `testflight/<build>`.
 2. Archives a Release build and exports an **App Store Connect** .ipa (a .pkg for macOS; never "TestFlight Internal Only", which can't go to external testers or the App Store).
 3. Checks the bundle id, build number, and export compliance key in the built app.
-4. Uploads with `altool` and tags the commit `testflight/<build>` (see below), then waits for processing and answers export compliance if the app doesn't declare it.
+4. Uploads with `altool`, then waits for processing and answers export compliance if the app doesn't declare it.
 5. Sets "What to Test" and adds the build to the internal groups.
 6. With `--external`, adds it to the external groups and submits it to Beta App Review.
 
-It's safe to re-run: an uploaded build isn't uploaded again. `ship distribute <build>` redoes only steps 4–6.
+It's safe to re-run: a commit whose build is already uploaded goes straight to distribution, and one whose archive or upload failed gets the same number again. `ship distribute <build>` redoes only steps 4–6.
 
 ## Which commit is in TestFlight
 
-App Store Connect has no field for a commit, so the repo keeps the record. `ship beta` tags the commit it built `testflight/<build>` and pushes the tag to origin (which also pushes the commit, if it wasn't). `ship status` fetches those tags, shows each build's commit, and says how far origin's default branch has moved since the newest one:
+App Store Connect has no field for a commit, so the repo keeps the record. Before archiving, `ship beta` tags the commit `testflight/<build>` and pushes the tag to origin (which also pushes the commit, if it wasn't). Origin refuses a tag it already has, so the tag is also a claim on the number: a second machine shipping at the same time moves on to the next one. A failed archive or upload deletes the tag, so the number is free again. The tag is annotated with what was built:
 
 ```
-origin/main has 7 commits since build 202610210930 (6cb9262): git log --oneline 6cb9262..origin/main
+$ git tag -n9 testflight/10
+testflight/10   MyApp 1.0.1 (10), iOS
+
+                Ship-Bundle-Id: com.example.myapp
+                Ship-Platform: ios
+                Ship-Version: 1.0.1
+                Ship-Branch: main
 ```
+
+`ship status` fetches those tags, shows each build's commit, and says how far origin's default branch has moved since the newest one:
+
+```
+origin/main has 7 commits since build 12 (6cb9262): git log --oneline 6cb9262..origin/main
+```
+
+`ship release submit` tags the submitted build's commit `appstore/<version>` the same way, so `git log appstore/1.0.1..main` lists what's changed since the last App Store release.
 
 So a build always matches a commit, `ship beta` stops when there are uncommitted changes (untracked files included, since Xcode builds files it finds in synced folders). `--allow-dirty` ships them anyway and skips the tag; it's also what ships a project that isn't in git, or has no commit yet. It also warns when the commit isn't on the default branch yet, like a PR branch that will be squashed.
 
@@ -86,6 +100,12 @@ The commit reaches the build as the `SHIP_COMMIT` build setting (with `-dirty` a
 To record a build ship didn't upload: `git tag testflight/<build> <commit> && git push origin testflight/<build>`.
 
 ## Build numbers and products
+
+Build numbers are one counter per app that never resets: `1.0.1 (10)`, `1.0.1 (11)`, then `1.1 (12)`. Each number names one build across every version and platform, so `ship distribute 12`, `ship feedback --build 12`, and `testflight/12` never need a version. The next number is one above the highest counter in App Store Connect or in a `testflight/*` tag. Apple's rules hold either way: on iOS, tvOS, and visionOS a version's builds only have to increase, and on macOS every build does.
+
+A number of 100,000 or more, like a `202610200522` timestamp or one typed with `--build`, never feeds the counter. Otherwise one such number would make every later build a fake timestamp. A version that already has one keeps going above it, with a warning. `ship version bump patch` starts short numbers in the next version, at the number of uploads so far plus one. On macOS, where build numbers have to keep rising across versions, an app with such a number stays above it.
+
+A build that fails processing has used up its number; the next upload takes a new one.
 
 For App Playground packages, the build number is written to `Package.swift`'s `bundleVersion` during the archive; commit it before the next `ship beta`. The tagged commit has the previous number there, and the tag's name is the one that shipped. For Xcode projects, it's passed as `CURRENT_PROJECT_VERSION` at archive time, so no files change.
 
@@ -121,7 +141,7 @@ To skip Xcode's check in a repo that has decided to trust its packages, as CI do
 
 ## What to Test from git
 
-`ship beta --notes-from-git` fills What to Test with the commit subjects since the previous TestFlight build: the newest `testflight/<build>` tag in the commit's history, or the last 30 commits when there's none. Subjects are cleaned for testers: emoji and `:gitmoji:` codes, `feat(scope)!:` prefixes, and `(#123)` go, and chores (chore, ci, test, docs, style, build, refactor) and merges are left out.
+`ship beta --notes-from-git` fills What to Test with the commit subjects since the previous TestFlight build: the closest `testflight/<build>` tag behind the commit, or the last 30 commits when there's none. Subjects are cleaned for testers: emoji and `:gitmoji:` codes, `feat(scope)!:` prefixes, and `(#123)` go, and chores (chore, ci, test, docs, style, build, refactor) and merges are left out.
 
 ```
 🚀 feat: tag each TestFlight upload with its commit (#1)     →  • Tag each TestFlight upload with its commit

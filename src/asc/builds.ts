@@ -173,16 +173,23 @@ export async function recentBuilds(appId: string, limit = 10, platform?: AscPlat
   return listBuilds(appId, { limit, platform });
 }
 
-/** One build by its number, if App Store Connect has it (it appears a few minutes after upload). */
-export async function findBuild(appId: string, number: string, platform?: AscPlatform): Promise<Build | undefined> {
-  const [build] = await listBuilds(appId, { number, platform, limit: 1 });
+/** One build by its number, if App Store Connect has it (it appears a few minutes after upload). `version` narrows it to that version's build. */
+export async function findBuild(appId: string, number: string, platform?: AscPlatform, version?: string): Promise<Build | undefined> {
+  const [build] = await listBuilds(appId, { number, platform, version, limit: 1 });
   return build;
 }
 
-/** The highest build number uploaded so far, across every version (and platform, so numbers never collide). */
-export async function highestBuildNumber(appId: string): Promise<number> {
-  const builds = await recentBuilds(appId, 50);
-  return Math.max(0, ...builds.map((build) => Number.parseInt(build.number, 10)).filter(Number.isFinite));
+/**
+ * What picking the next build number reads: the app's newest 200 uploads
+ * (every version and platform), and the newest 200 in the train, the
+ * version's builds on the platform (every version, on macOS, where build
+ * numbers have to keep rising across versions). With no version, the train
+ * is the platform's builds.
+ */
+export async function numberingBuilds(appId: string, platform: AscPlatform, version?: string): Promise<{ builds: Build[]; train: Build[] }> {
+  const train = platform === "MAC_OS" || !version ? { platform } : { platform, version };
+  const [builds, inTrain] = await Promise.all([listBuilds(appId, { limit: 200 }), listBuilds(appId, { ...train, limit: 200 })]);
+  return { builds, train: inTrain };
 }
 
 // MARK: Details
