@@ -10,24 +10,42 @@
 
 ## How `ship beta` works
 
-1. Picks the build number: one above the highest in App Store Connect, or `--build <n>`. Stops if there are uncommitted changes.
+1. Picks the build number (see [Build numbers](#build-numbers-and-build-products)), or takes `--build <n>`. Stops if there are uncommitted changes. Claims the number by tagging the commit `testflight/<build>`.
 2. Archives a Release build and exports an **App Store Connect** `.ipa` (a `.pkg` for macOS). Never "TestFlight Internal Only", which can't go to external testers or the App Store.
 3. Checks the bundle id, build number, and export compliance key in the built app.
-4. Uploads with `altool` and tags the commit `testflight/<build>`. Waits for processing, and answers export compliance if the app doesn't declare it.
+4. Uploads with `altool`. Waits for processing, and answers export compliance if the app doesn't declare it.
 5. Sets What to Test and adds the build to the internal groups.
 6. With `--external`, adds it to the external groups and submits it to Beta App Review.
 
-It's safe to re-run: a build that's already uploaded isn't uploaded again. `ship distribute <build>` redoes only steps 4–6. `ship archive` archives and exports without uploading, using the project's current build number (or `--build`), which is handy for checking signing.
+It's safe to re-run. A commit whose build is already uploaded goes straight to distribution, and one whose archive or upload failed gets the same number again. `ship distribute <build>` redoes only steps 4–6. `ship archive` archives and exports without uploading, using the project's current build number (or `--build`), which is handy for checking signing.
 
 `--dry-run` prints the plan without building.
 
 ## Which commit is in TestFlight
 
-App Store Connect has no field for a commit, so the repo keeps the record. `ship beta` tags the commit it built `testflight/<build>` and pushes the tag to origin (which pushes the commit too, if it wasn't). `ship status` fetches those tags, shows each build's commit, and says how far origin's default branch has moved since the newest one:
+App Store Connect has no field for a commit, so the repo keeps the record. Before archiving, `ship beta` tags the commit `testflight/<build>` and pushes the tag to origin (which pushes the commit too, if it wasn't).
+
+The tag is also a claim on the number. Origin refuses a tag it already has, so a second machine shipping at the same time moves on to the next number. A failed archive or upload deletes the tag, so the number is free again.
+
+The tag is annotated with what was built:
 
 ```
-origin/main has 7 commits since build 202610210930 (6cb9262): git log --oneline 6cb9262..origin/main
+$ git tag -n9 testflight/10
+testflight/10   MyApp 1.0.1 (10), iOS
+
+                Ship-Bundle-Id: com.example.myapp
+                Ship-Platform: ios
+                Ship-Version: 1.0.1
+                Ship-Branch: main
 ```
+
+`ship status` fetches those tags, shows each build's commit, and says how far origin's default branch has moved since the newest one:
+
+```
+origin/main has 7 commits since build 12 (6cb9262): git log --oneline 6cb9262..origin/main
+```
+
+`ship release submit` tags the submitted build's commit `appstore/<version>` the same way, so `git log appstore/1.0.1..main` lists what's changed since the last App Store release.
 
 For a build to match a commit, `ship beta` stops when there are uncommitted changes, untracked files included (Xcode builds files it finds in synced folders). It also warns when the commit isn't on the default branch yet, like a PR branch that will be squashed.
 
@@ -43,7 +61,7 @@ git tag testflight/<build> <commit> && git push origin testflight/<build>
 
 ## What to Test from git
 
-`ship beta --notes-from-git` fills What to Test with the commit subjects since the previous TestFlight build: the newest `testflight/<build>` tag in the commit's history, or the last 30 commits when there's none.
+`ship beta --notes-from-git` fills What to Test with the commit subjects since the previous TestFlight build: the closest `testflight/<build>` tag behind the commit, or the last 30 commits when there's none.
 
 Subjects are cleaned up for testers. Emoji, `:gitmoji:` codes, `feat(scope)!:` prefixes, and `(#123)` are removed. Merges and chores (`chore`, `ci`, `test`, `docs`, `style`, `build`, `refactor`) are left out.
 
@@ -69,6 +87,14 @@ To use git's notes whenever no other notes are given, add this to `ship.json`:
 `--dry-run` shows the notes. With `--json`, they're in `plan.notes`, with `plan.notesSource` (`flag`, `file`, `git`, or a mix like `flag+git`) and `plan.notesFrom` (the previous build).
 
 ## Build numbers and build products
+
+Build numbers are one counter per app that never resets: `1.0.1 (10)`, `1.0.1 (11)`, then `1.1 (12)`. Each number names one build across every version and platform, so `ship distribute 12`, `ship feedback --build 12`, and `testflight/12` never need a version.
+
+The next number is one above the highest counter in App Store Connect or in a `testflight/*` tag. Apple's rules hold either way: on iOS, tvOS, and visionOS a version's builds only have to increase, and on macOS every build does. A build that fails processing has used up its number, so the next upload takes a new one.
+
+A number of 100,000 or more never feeds the counter. That covers a timestamp like `202610200522` and anything typed with `--build`. Otherwise one such number would make every later build a fake timestamp.
+
+A version that already has such a number keeps going above it, with a warning. `ship version bump patch` starts short numbers in the next version, at the number of uploads so far plus one. On macOS, where build numbers have to keep rising across versions, an app with such a number stays above it.
 
 For Xcode projects, the build number is passed as `CURRENT_PROJECT_VERSION` at archive time, so no files change.
 

@@ -27,7 +27,8 @@
 - `src/trust.ts`: Xcode's trust prompt for package macros and plugins, and ship.json's `build` settings
 - `src/xcode.ts`: finding projects, schemes, and settings
 - `src/config.ts`: ship.json, the machine's app list (worktrees map to their main checkout), and settings
-- `src/git.ts`: the commit a build comes from, the `testflight/<build>` tags that record it, and worktrees
+- `src/buildnumber.ts`: the next build number (one counter per app; 100,000 and up is foreign and only sets a floor)
+- `src/git.ts`: the commit a build comes from, the annotated `testflight/<build>` tags that claim and record it, `appstore/<version>` tags, and worktrees
 - `src/notes.ts`: "What to Test" from --notes, a file, and the commit subjects since the previous build
 - `src/version.ts`: the app's version (MARKETING_VERSION or Package.swift's displayVersion): read, bump, and write
 - `src/ui.ts`: output; every error is a `ShipError` with a code and a hint. Its exit code comes from the code's kind (`EXIT`: 3 auth, 4 not found, 5 conflict, 6 read-only, 7 still pending); a new code that's one of those kinds goes in `EXIT_BY_CODE`

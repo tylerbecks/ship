@@ -57,7 +57,7 @@ The version comes from the project (`ship version`) unless you pass `--version`.
 
 Anything missing stops it, with the command that fixes it. Missing iPad screenshots and What's New only warn.
 
-Then it submits, reusing a draft submission or the one App Review rejected. Whatever ship can't check, App Store Connect's own response lists.
+Then it submits, reusing a draft submission or the one App Review rejected. Whatever ship can't check, App Store Connect's own response lists. Once submitted, it tags the build's commit `appstore/<version>` and pushes the tag, using the build's `testflight/<build>` tag to find the commit. A version that's already tagged keeps its tag.
 
 `--dry-run` shows every step and check without changing anything. `--junit <path>` writes the checks as a JUnit report for CI.
 

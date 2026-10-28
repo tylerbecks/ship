@@ -4,7 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/exec";
 import { checkCommit } from "../src/commands/beta";
-import { buildCommits, describeSince, drift, porcelainLines, fetchBuildTags, headCommit, sinceBuild, tagBuild } from "../src/git";
+import {
+  buildCommits,
+  buildTagMessage,
+  claimBuild,
+  describeSince,
+  drift,
+  porcelainLines,
+  fetchBuildTags,
+  headCommit,
+  releaseClaim,
+  sinceBuild,
+  tagBuild,
+} from "../src/git";
 
 const temp = () => mkdtempSync(join(tmpdir(), "ship-git-"));
 
@@ -64,7 +76,7 @@ describe("build tags", () => {
   test("tags a build, pushes the tag, and reads it back", async () => {
     const { app, origin, first } = await repo();
     expect(await tagBuild(app, "42", first)).toEqual({ tag: "testflight/42", pushed: true, warnings: [] });
-    expect(await git(origin, "rev-parse", "testflight/42")).toBe(first);
+    expect(await git(origin, "rev-parse", "testflight/42^{commit}")).toBe(first);
     expect(await buildCommits(app)).toEqual(new Map([["42", first]]));
 
     // Re-tagging the same commit is fine; another commit is left alone.
@@ -96,6 +108,75 @@ describe("build tags", () => {
     expect((await buildCommits(app)).size).toBe(0);
     await fetchBuildTags(app);
     expect(await buildCommits(app)).toEqual(new Map([["9", first]]));
+  });
+});
+
+describe("claiming build numbers", () => {
+  const message = buildTagMessage({ app: "MyApp", bundleId: "com.example.app", version: "1.0.1", build: "10", platform: "ios", platformTitle: "iOS", branch: "main" });
+
+  test("the tag message names the build and carries trailers", () => {
+    expect(message).toBe("MyApp 1.0.1 (10), iOS\n\nShip-Bundle-Id: com.example.app\nShip-Platform: ios\nShip-Version: 1.0.1\nShip-Branch: main");
+  });
+
+  test("claims a number with an annotated tag on origin", async () => {
+    const { app, origin, first } = await repo();
+    expect(await claimBuild(app, "10", first, message)).toEqual({ tag: "testflight/10", pushed: true, warnings: [], taken: false, created: true });
+    expect(await git(origin, "cat-file", "-t", "testflight/10")).toBe("tag");
+    expect(await git(origin, "tag", "-l", "--format=%(contents:subject)", "testflight/10")).toBe("MyApp 1.0.1 (10), iOS");
+    expect(await buildCommits(app)).toEqual(new Map([["10", first]]));
+    // Claiming it again from the same commit is fine, but the claim didn't make the tag.
+    expect(await claimBuild(app, "10", first, message)).toMatchObject({ taken: false, created: false });
+  });
+
+  test("a number another clone claimed first is taken, and the local tag goes", async () => {
+    const { dir, app, first } = await repo();
+    await git(dir, "clone", "--quiet", "origin.git", "other");
+    const other = join(dir, "other");
+    const theirs = await commit(other, "theirs");
+    await claimBuild(other, "10", theirs, message);
+
+    const ours = await commit(app, "ours");
+    const claim = await claimBuild(app, "10", ours, message);
+    expect(claim).toEqual({ tag: "testflight/10", taken: true, by: theirs });
+    expect(await buildCommits(app)).toEqual(new Map());
+    // Once fetched, it's taken locally too.
+    await fetchBuildTags(app);
+    expect(await claimBuild(app, "10", ours, message)).toEqual({ tag: "testflight/10", taken: true, by: theirs });
+  });
+
+  test("another platform's build of the same commit shares the tag", async () => {
+    const { dir, app, first } = await repo();
+    await git(dir, "clone", "--quiet", "origin.git", "other");
+    await claimBuild(join(dir, "other"), "10", first, message.replace("iOS", "macOS"));
+    const shared = await claimBuild(app, "10", first, message);
+    expect(shared).toEqual({ tag: "testflight/10", pushed: true, warnings: [], taken: false, created: false });
+    // If this platform's upload fails, the other build keeps its tag.
+    if (shared.taken) throw new Error("expected a claim");
+    await releaseClaim(app, shared);
+    expect(await buildCommits(app)).toEqual(new Map([["10", first]]));
+    expect(await git(join(dir, "origin.git"), "tag", "-l")).toBe("testflight/10");
+  });
+
+  test("works without a git identity", async () => {
+    const { app, first } = await repo();
+    const saved = { ...process.env };
+    try {
+      for (const name of ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"]) delete process.env[name];
+      await git(app, "config", "user.useConfigOnly", "true");
+      expect((await claimBuild(app, "3", first, message)).taken).toBe(false);
+    } finally {
+      Object.assign(process.env, saved);
+    }
+    expect(await git(app, "tag", "-l", "--format=%(taggername)", "testflight/3")).toBe("ship");
+  });
+
+  test("releasing a claim frees the number here and on origin", async () => {
+    const { app, origin, first } = await repo();
+    const claim = await claimBuild(app, "10", first, message);
+    if (claim.taken) throw new Error("expected a claim");
+    await releaseClaim(app, claim);
+    expect(await buildCommits(app)).toEqual(new Map());
+    expect(await git(origin, "tag", "-l")).toBe("");
   });
 });
 

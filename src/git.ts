@@ -3,7 +3,8 @@
 // `ship beta` tags the commit of every upload `testflight/<build>` and pushes
 // the tag, so the repo itself records what's in TestFlight: `ship status`
 // reads the tags, and `git log testflight/<build>..origin/main` lists what
-// isn't shipped yet.
+// isn't shipped yet. The tag is made before archiving, as a claim on the
+// number (see claimBuild), and annotated with the app, version, and platform.
 
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -72,13 +73,37 @@ export interface Tagging {
   tag: string;
   /** Whether origin has the tag now. */
   pushed: boolean;
-  /** Why it isn't tagged or pushed. The upload already worked, so these never fail the run. */
+  /** Why it isn't tagged or pushed. These never fail the run. */
   warnings: string[];
 }
 
-/** Tags the commit a build was uploaded from and pushes the tag to origin. */
-export async function tagBuild(root: string, build: string, sha: string): Promise<Tagging> {
-  const tag = tagFor(build);
+/**
+ * What an annotated build tag says: "MyApp 1.0.1 (10), iOS", then trailers
+ * a reader (or a script) can pick out of `git tag -n99`.
+ */
+export function buildTagMessage(info: { app: string; bundleId: string; version?: string; build: string; platform: string; platformTitle: string; branch?: string }): string {
+  const name = info.version ? `${info.app} ${info.version} (${info.build})` : `${info.app} build ${info.build}`;
+  const trailers = [
+    `Ship-Bundle-Id: ${info.bundleId}`,
+    `Ship-Platform: ${info.platform}`,
+    ...(info.version ? [`Ship-Version: ${info.version}`] : []),
+    ...(info.branch ? [`Ship-Branch: ${info.branch}`] : []),
+  ];
+  return `${name}, ${info.platformTitle}\n\n${trailers.join("\n")}`;
+}
+
+/** Makes an annotated tag, as "ship" when git has no identity set (an annotated tag needs a tagger). */
+async function annotatedTag(root: string, tag: string, sha: string, message: string) {
+  const created = await git(root, ["tag", "-a", "-m", message, tag, sha]);
+  if (created.code === 0) return created;
+  return git(root, ["-c", "user.name=ship", "-c", "user.email=ship@localhost", "tag", "-a", "-m", message, tag, sha]);
+}
+
+/** Whether the repo has an origin remote to push tags to. */
+export const hasOrigin = async (root: string) => (await git(root, ["remote", "get-url", "origin"])).code === 0;
+
+/** Tags `sha` (annotated, with `message`) and pushes the tag to origin. A tag already at another commit is left alone. */
+export async function tagCommit(root: string, tag: string, sha: string, message: string): Promise<Tagging> {
   const warnings: string[] = [];
   const existing = await git(root, ["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]);
   if (existing.code === 0 && existing.stdout.trim() !== sha) {
@@ -86,13 +111,13 @@ export async function tagBuild(root: string, build: string, sha: string): Promis
     return { tag, pushed: false, warnings };
   }
   if (existing.code !== 0) {
-    const created = await git(root, ["tag", tag, sha]);
+    const created = await annotatedTag(root, tag, sha, message);
     if (created.code !== 0) {
       warnings.push(`Couldn't create ${tag}: ${created.stderr.trim()}`);
       return { tag, pushed: false, warnings };
     }
   }
-  if ((await git(root, ["remote", "get-url", "origin"])).code !== 0) {
+  if (!(await hasOrigin(root))) {
     warnings.push(`No origin remote, so ${tag} is only on this machine.`);
     return { tag, pushed: false, warnings };
   }
@@ -100,6 +125,64 @@ export async function tagBuild(root: string, build: string, sha: string): Promis
   const pushed = await git(root, ["push", "--quiet", "origin", `refs/tags/${tag}`]);
   if (pushed.code !== 0) warnings.push(`Couldn't push ${tag}: ${pushed.stderr.trim()}. Push it with: git push origin ${tag}`);
   return { tag, pushed: pushed.code === 0, warnings };
+}
+
+/** Tags the commit a build was uploaded from and pushes the tag to origin. */
+export const tagBuild = (root: string, build: string, sha: string, message = `Build ${build}`) => tagCommit(root, tagFor(build), sha, message);
+
+/**
+ * A claimed build number: tagged and pushed, or `taken` when another commit
+ * already has it. `created` says whether this claim made the tag, rather than
+ * finding it on the commit already (another platform's build, or an earlier
+ * run's), which only the claim that made it may give back.
+ */
+export type Claim = (Tagging & { taken: false; created: boolean }) | { tag: string; taken: true; by: string };
+
+/**
+ * Claims a build number before archiving: tags `sha` testflight/<build>
+ * locally (atomic across worktrees, which share tags) and pushes the tag
+ * (origin refuses a tag it already has, so two machines can't both claim
+ * it). Without origin, or offline, the claim is only local, with a warning.
+ */
+export async function claimBuild(root: string, build: string, sha: string, message: string): Promise<Claim> {
+  const tag = tagFor(build);
+  const existing = await git(root, ["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]);
+  if (existing.code === 0 && existing.stdout.trim() !== sha) return { tag, taken: true, by: existing.stdout.trim() };
+  const created = existing.code !== 0;
+  if (created) {
+    const made = await annotatedTag(root, tag, sha, message);
+    if (made.code !== 0) {
+      // Another worktree made it between the check and now.
+      const now = await git(root, ["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]);
+      if (now.code === 0 && now.stdout.trim() !== sha) return { tag, taken: true, by: now.stdout.trim() };
+      return { tag, pushed: false, warnings: [`Couldn't create ${tag}: ${made.stderr.trim()}`], taken: false, created: false };
+    }
+  }
+  if (!(await hasOrigin(root))) return { tag, pushed: false, warnings: [`No origin remote, so ${tag} is only on this machine.`], taken: false, created };
+  const pushed = await git(root, ["push", "--quiet", "origin", `refs/tags/${tag}`]);
+  if (pushed.code === 0) return { tag, pushed: true, warnings: [], taken: false, created };
+  if (/already exists|\[rejected\]/.test(pushed.stderr)) {
+    await git(root, ["tag", "-d", tag]);
+    const fetched = await git(root, ["ls-remote", "origin", `refs/tags/${tag}^{}`, `refs/tags/${tag}`]);
+    const by = fetched.stdout.trim().split("\n").at(-1)?.split(/\s/)[0] ?? "";
+    // Another platform's build of this commit claimed it first: share its tag.
+    if (by === sha && (await git(root, ["fetch", "--quiet", "origin", `refs/tags/${tag}:refs/tags/${tag}`])).code === 0) {
+      return { tag, pushed: true, warnings: [], taken: false, created: false };
+    }
+    return { tag, taken: true, by };
+  }
+  return { tag, pushed: false, warnings: [`Couldn't push ${tag}, so another machine could pick the same number: ${pushed.stderr.trim()}`], taken: false, created };
+}
+
+/**
+ * Gives up a claim whose upload failed, so the number is free again. Best
+ * effort, and only for a tag the claim made: one it found may record another
+ * build of the commit.
+ */
+export async function releaseClaim(root: string, claim: Tagging & { created: boolean }) {
+  if (!claim.created) return;
+  await git(root, ["tag", "-d", claim.tag]);
+  if (claim.pushed) await git(root, ["push", "--quiet", "origin", `:refs/tags/${claim.tag}`]);
 }
 
 /**
@@ -116,7 +199,7 @@ export async function fetchBuildTags(root: string) {
 
 /** The commit each build was uploaded from, by build number. */
 export async function buildCommits(root: string): Promise<Map<string, string>> {
-  // %(*objectname) is the commit behind an annotated tag, for tags made by hand with -a.
+  // %(*objectname) is the commit behind an annotated tag; a lightweight one (older ship, or by hand) has only %(objectname).
   const result = await git(root, ["for-each-ref", "--format=%(refname:strip=3) %(objectname) %(*objectname)", "refs/tags/testflight/"]);
   const commits = new Map<string, string>();
   if (result.code !== 0) return commits;

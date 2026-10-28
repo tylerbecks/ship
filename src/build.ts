@@ -18,6 +18,9 @@ export const BUILD_NUMBER = /^\d+(\.\d+){0,2}$/;
 
 /** Stops a --build value Apple would reject, before archiving for minutes. */
 export function checkBuildNumber(value: string): string {
+  if (BUILD_NUMBER.test(value) && value.length > 18) {
+    throw new ShipError(`Build number ${value} is ${value.length} characters; Apple takes up to 18`, "usage", "Use a shorter --build, like 42.", undefined, 2);
+  }
   if (!BUILD_NUMBER.test(value)) {
     throw new ShipError(
       `"${value}" isn't a build number`,

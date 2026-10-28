@@ -10,7 +10,6 @@ import {
   checkNotesStdin,
   cleanSubject,
   commitSubjects,
-  compareBuildNumbers,
   fitLines,
   gitNotes,
   notesFromCommits,
@@ -152,11 +151,6 @@ describe("notesFromCommits", () => {
   });
 });
 
-test("compareBuildNumbers compares numerically, part by part", () => {
-  expect(["10", "9", "1.2.10", "1.2.9", "100"].sort(compareBuildNumbers)).toEqual(["1.2.9", "1.2.10", "9", "10", "100"]);
-  expect(compareBuildNumbers("3", "3.0")).toBe(0);
-});
-
 // MARK: Git
 
 async function commit(cwd: string, subject: string, file = subject.replace(/\W+/g, "-")) {
@@ -173,7 +167,7 @@ async function repo() {
 }
 
 describe("previousBuild and commitSubjects", () => {
-  test("pick the highest tagged build in HEAD's history, not HEAD itself", async () => {
+  test("pick the closest tagged build in HEAD's history, not HEAD itself", async () => {
     const dir = await repo();
     const a = await commit(dir, "feat: a");
     const b = await commit(dir, "feat: b");
@@ -197,6 +191,25 @@ describe("previousBuild and commitSubjects", () => {
     expect(await commitSubjects(dir, b, d)).toEqual(["fix: d", "🚀 feat: c (#3)"]);
     expect(await commitSubjects(dir, undefined, c)).toEqual(["🚀 feat: c (#3)", "feat: b", "feat: a"]);
     expect(await commitSubjects(dir, "nope", d)).toEqual([]);
+  });
+
+  test("pick the closest build behind HEAD, so short numbers follow timestamp-style ones", async () => {
+    const dir = await repo();
+    const a = await commit(dir, "feat: a");
+    const b = await commit(dir, "feat: b");
+    await git(dir, "tag", "testflight/202610200521", a);
+    await git(dir, "tag", "-a", "-m", "MyApp 1.0 (202610200522), iOS", "testflight/202610200522", b);
+    const c = await commit(dir, "chore: bump the version");
+    await git(dir, "tag", "-a", "-m", "MyApp 1.0.1 (10), iOS", "testflight/10", c);
+    const d = await commit(dir, "fix: d");
+
+    expect(await previousBuild(dir, d)).toEqual({ build: "10", commit: c });
+    expect(await previousBuild(dir, c)).toEqual({ build: "202610200522", commit: b });
+    // Redistributing 10 looks behind it, which a timestamp-style number is.
+    expect(await previousBuild(dir, d, { below: "10" })).toEqual({ build: "202610200522", commit: b });
+    // Two builds of one commit (iOS and macOS, or a rebuild): the later one.
+    await git(dir, "tag", "testflight/11", c);
+    expect(await previousBuild(dir, d)).toEqual({ build: "11", commit: c });
   });
 
   test("leave out merges", async () => {
