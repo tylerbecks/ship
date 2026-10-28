@@ -43,6 +43,9 @@ export function compareBuildOrder(a: string, b: string): number {
   return compareBuildNumbers(a, b);
 }
 
+/** Whether `number` is above every build in the train, as Apple requires of a new upload. */
+export const aboveTrain = (number: string, train: NumberedBuild[]) => train.every((build) => compareBuildNumbers(number, build.number) > 0);
+
 /** A build App Store Connect has, as far as numbering needs to know. */
 export interface NumberedBuild {
   number: string;

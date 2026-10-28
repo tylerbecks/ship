@@ -5,7 +5,7 @@ import { type Build, findBuild, listBuilds, numberingBuilds, setExemptEncryption
 import { assertWritable } from "../asc/client";
 import { addBuildToGroup, betaGroups, setWhatToTest, submitForBetaReview } from "../asc/testflight";
 import { archive, buildPaths, checkBuildNumber, checkInfo, exportIPA, packageInfo, upload, withKeyFile } from "../build";
-import { type NextBuild, compareBuildOrder, isCounter, nextBuildNumber } from "../buildnumber";
+import { type NextBuild, aboveTrain, compareBuildOrder, isCounter, nextBuildNumber } from "../buildnumber";
 import { type Project, loadProject, repoRoot } from "../config";
 import { credentials } from "../credentials";
 import {
@@ -134,7 +134,7 @@ export async function beta(options: BetaOptions) {
 
   let tag: Tagging | null = null;
   if (!existing) {
-    let claim: Tagging | null = null;
+    let claim: (Tagging & { created: boolean }) | null = null;
     if (tagged) {
       const message = (number: string) =>
         buildTagMessage({
@@ -187,7 +187,10 @@ export async function beta(options: BetaOptions) {
       throw error;
     }
     // A claim that couldn't be pushed gets another try now the build is uploaded.
-    if (claim && tagged) tag = claim.pushed || !(await hasOrigin(project.root)) ? claim : await tagCommit(project, build, commit);
+    if (claim && tagged) {
+      const { created: _, ...tagging } = claim;
+      tag = claim.pushed || !(await hasOrigin(project.root)) ? tagging : await tagCommit(project, build, commit);
+    }
   }
 
   if (options.wait === false) {
@@ -270,13 +273,14 @@ async function pickBuild(
         .sort(compareBuildOrder)
         .at(-1)
     : undefined;
-  if (atHead) {
-    const found = await findBuild(id, atHead, platform, options.version);
-    if (!found) return { build: atHead, numbering: numbering(atHead), reclaimed: true };
-    // A build that failed processing used up its number.
-    if (found.processingState !== "FAILED" && found.processingState !== "INVALID") return { build: atHead, numbering: numbering(atHead), existing: found };
+  const found = atHead ? await findBuild(id, atHead, platform, options.version) : undefined;
+  // A build that failed processing used up its number.
+  if (atHead && found && found.processingState !== "FAILED" && found.processingState !== "INVALID") {
+    return { build: atHead, numbering: numbering(atHead), existing: found };
   }
   const { builds, train } = await numberingBuilds(id, platform, options.version);
+  // HEAD's number from another platform's build, or a run that didn't upload, only if this platform can take it.
+  if (atHead && !found && aboveTrain(atHead, train)) return { build: atHead, numbering: numbering(atHead), reclaimed: true };
   return nextBuildNumber({ builds, train, tags: [...tags.keys()], local: options.local });
 }
 
@@ -293,13 +297,20 @@ function legacyWarning(project: Project, floor: string, build: string, version: 
  * number while another commit has it (up to 3 tries). A --build number that's
  * taken fails instead.
  */
-async function claimNumber(project: Project, build: string, commit: Commit, message: (build: string) => string, requested: boolean): Promise<{ build: string; claim: Tagging }> {
+async function claimNumber(
+  project: Project,
+  build: string,
+  commit: Commit,
+  message: (build: string) => string,
+  requested: boolean,
+): Promise<{ build: string; claim: Tagging & { created: boolean } }> {
   for (let attempt = 1; ; attempt++) {
     const claim = await claimBuild(project.root, build, commit.sha, message(build));
     if (!claim.taken) {
       for (const warning of claim.warnings) ui.warn(warning);
       if (!claim.warnings.length) ui.ok(`Tagged ${commit.short} as ${claim.tag} and pushed it`);
-      return { build, claim };
+      const { taken: _, ...owned } = claim;
+      return { build, claim: owned };
     }
     if (requested || attempt === 3) {
       throw new ShipError(

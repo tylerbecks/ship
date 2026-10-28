@@ -130,8 +130,13 @@ export async function tagCommit(root: string, tag: string, sha: string, message:
 /** Tags the commit a build was uploaded from and pushes the tag to origin. */
 export const tagBuild = (root: string, build: string, sha: string, message = `Build ${build}`) => tagCommit(root, tagFor(build), sha, message);
 
-/** A claimed build number: tagged and pushed, or `taken` when another commit already has it. */
-export type Claim = (Tagging & { taken: false }) | { tag: string; taken: true; by: string };
+/**
+ * A claimed build number: tagged and pushed, or `taken` when another commit
+ * already has it. `created` says whether this claim made the tag, rather than
+ * finding it on the commit already (another platform's build, or an earlier
+ * run's), which only the claim that made it may give back.
+ */
+export type Claim = (Tagging & { taken: false; created: boolean }) | { tag: string; taken: true; by: string };
 
 /**
  * Claims a build number before archiving: tags `sha` testflight/<build>
@@ -143,33 +148,39 @@ export async function claimBuild(root: string, build: string, sha: string, messa
   const tag = tagFor(build);
   const existing = await git(root, ["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]);
   if (existing.code === 0 && existing.stdout.trim() !== sha) return { tag, taken: true, by: existing.stdout.trim() };
-  if (existing.code !== 0) {
-    const created = await annotatedTag(root, tag, sha, message);
-    if (created.code !== 0) {
+  const created = existing.code !== 0;
+  if (created) {
+    const made = await annotatedTag(root, tag, sha, message);
+    if (made.code !== 0) {
       // Another worktree made it between the check and now.
       const now = await git(root, ["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]);
       if (now.code === 0 && now.stdout.trim() !== sha) return { tag, taken: true, by: now.stdout.trim() };
-      return { tag, pushed: false, warnings: [`Couldn't create ${tag}: ${created.stderr.trim()}`], taken: false };
+      return { tag, pushed: false, warnings: [`Couldn't create ${tag}: ${made.stderr.trim()}`], taken: false, created: false };
     }
   }
-  if (!(await hasOrigin(root))) return { tag, pushed: false, warnings: [`No origin remote, so ${tag} is only on this machine.`], taken: false };
+  if (!(await hasOrigin(root))) return { tag, pushed: false, warnings: [`No origin remote, so ${tag} is only on this machine.`], taken: false, created };
   const pushed = await git(root, ["push", "--quiet", "origin", `refs/tags/${tag}`]);
-  if (pushed.code === 0) return { tag, pushed: true, warnings: [], taken: false };
+  if (pushed.code === 0) return { tag, pushed: true, warnings: [], taken: false, created };
   if (/already exists|\[rejected\]/.test(pushed.stderr)) {
     await git(root, ["tag", "-d", tag]);
     const fetched = await git(root, ["ls-remote", "origin", `refs/tags/${tag}^{}`, `refs/tags/${tag}`]);
     const by = fetched.stdout.trim().split("\n").at(-1)?.split(/\s/)[0] ?? "";
     // Another platform's build of this commit claimed it first: share its tag.
     if (by === sha && (await git(root, ["fetch", "--quiet", "origin", `refs/tags/${tag}:refs/tags/${tag}`])).code === 0) {
-      return { tag, pushed: true, warnings: [], taken: false };
+      return { tag, pushed: true, warnings: [], taken: false, created: false };
     }
     return { tag, taken: true, by };
   }
-  return { tag, pushed: false, warnings: [`Couldn't push ${tag}, so another machine could pick the same number: ${pushed.stderr.trim()}`], taken: false };
+  return { tag, pushed: false, warnings: [`Couldn't push ${tag}, so another machine could pick the same number: ${pushed.stderr.trim()}`], taken: false, created };
 }
 
-/** Gives up a claim whose upload failed, so the number is free again. Best effort. */
-export async function releaseClaim(root: string, claim: Tagging) {
+/**
+ * Gives up a claim whose upload failed, so the number is free again. Best
+ * effort, and only for a tag the claim made: one it found may record another
+ * build of the commit.
+ */
+export async function releaseClaim(root: string, claim: Tagging & { created: boolean }) {
+  if (!claim.created) return;
   await git(root, ["tag", "-d", claim.tag]);
   if (claim.pushed) await git(root, ["push", "--quiet", "origin", `:refs/tags/${claim.tag}`]);
 }

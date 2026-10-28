@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { checkBuildNumber } from "../src/build";
-import { type NumberedBuild, compareBuildNumbers, compareBuildOrder, isCounter, nextBuildNumber } from "../src/buildnumber";
+import { type NumberedBuild, aboveTrain, compareBuildNumbers, compareBuildOrder, isCounter, nextBuildNumber } from "../src/buildnumber";
 
 const ios = (number: string, version = "1.0"): NumberedBuild => ({ number, version, platform: "IOS" });
 
@@ -72,6 +72,13 @@ describe("nextBuildNumber", () => {
   test("dotted numbers count by their first part", () => {
     expect(nextBuildNumber({ builds: [ios("1.2.3"), ios("4.1")], train: [] }).build).toBe("5");
   });
+});
+
+test("a number HEAD already has is only reused above the platform's train", () => {
+  // iOS claimed 10 for this commit, but macOS already has a timestamp-style build.
+  expect(aboveTrain("10", [{ number: "202610200522", platform: "MAC_OS" }])).toBe(false);
+  expect(aboveTrain("10", [ios("9"), ios("4")])).toBe(true);
+  expect(aboveTrain("10", [])).toBe(true);
 });
 
 test("--build stops a number Apple would reject for length", () => {
